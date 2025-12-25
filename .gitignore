@@ -1,0 +1,35 @@
+# =========================
+# Backend - Generated Files
+# =========================
+backend/output/
+backend/subtitles/
+backend/videos/
+
+# Python cache & env
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+venv/
+.env.*
+
+# Logs
+*.log
+
+# =========================
+# Frontend - Node / Build
+# =========================
+frontend/node_modules/
+
+# Build output (jika pakai Vite / React)
+frontend/dist/
+frontend/build/
+
+# =========================
+# OS & Editor
+# =========================
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
