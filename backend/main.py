@@ -33,11 +33,13 @@ BASE_DIR = Path(__file__).parent
 VIDEOS_DIR = BASE_DIR / "videos"
 SUBTITLES_DIR = BASE_DIR / "subtitles"
 OUTPUT_DIR = BASE_DIR / "output"
+HISTORY_DIR = BASE_DIR / "history"
 
 # Create directories if not exist
 VIDEOS_DIR.mkdir(exist_ok=True)
 SUBTITLES_DIR.mkdir(exist_ok=True)
 OUTPUT_DIR.mkdir(exist_ok=True)
+HISTORY_DIR.mkdir(exist_ok=True)
 
 # Progress tracking
 transcribe_progress: Dict[str, dict] = {}
@@ -76,7 +78,7 @@ def update_progress(video_id: str, status: str, progress: int):
 
 
 def create_ass_subtitle(words: List[dict], ass_path: Path):
-    """Create ASS subtitle with Opus Clip style (per-word highlight animation)"""
+    """Create ASS subtitle with Opus Clip style (per-word highlight animation) - ALL UPPERCASE"""
     
     # ASS Header dengan style yang mirip Opus Clip
     ass_content = """[Script Info]
@@ -123,8 +125,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             text_parts = []
             
             for i, w in enumerate(line_words):
-                # Convert word to UPPERCASE
-                word_upper = w['word'].upper()
+                # Convert word to UPPERCASE - FIX BUG DISINI
+                word_upper = w['word'].strip().upper()
                 
                 if i == word_idx:
                     # Current word - highlighted in green with bold
@@ -201,18 +203,51 @@ def burn_subtitle_to_video(video_path: Path, ass_path: Path, output_path: Path):
             temp_ass.unlink()
 
 
+def save_to_history(video_id: str, video_filename: str, total_words: int, duration: float):
+    """Save video processing history"""
+    history_file = HISTORY_DIR / "history.json"
+    
+    # Load existing history
+    history = []
+    if history_file.exists():
+        with open(history_file, 'r', encoding='utf-8') as f:
+            history = json.load(f)
+    
+    # Add new entry
+    history_entry = {
+        "video_id": video_id,
+        "filename": video_filename,
+        "date": datetime.now().isoformat(),
+        "total_words": total_words,
+        "duration": round(duration, 2),
+        "status": "completed"
+    }
+    
+    history.insert(0, history_entry)  # Add to beginning
+    
+    # Keep only last 100 entries
+    history = history[:100]
+    
+    # Save history
+    with open(history_file, 'w', encoding='utf-8') as f:
+        json.dump(history, f, ensure_ascii=False, indent=2)
+    
+    logger.info(f"History saved for {video_id}")
+
+
 @app.get("/")
 def read_root():
     return {
         "message": "Whisper Subtitle API with Opus Clip Style",
         "device": DEVICE,
         "model": MODEL_NAME,
-        "style": "Per-word highlight animation (Opus Clip style)",
+        "style": "Per-word highlight animation (Opus Clip style) - ALL UPPERCASE",
         "endpoints": {
             "POST /upload": "Upload video file",
             "POST /transcribe": "Transcribe video and burn subtitle (async)",
             "GET /progress/{video_id}": "Get transcription progress",
-            "GET /download/{video_id}": "Download video with burned subtitle"
+            "GET /download/{video_id}": "Download video with burned subtitle",
+            "GET /history": "Get processing history"
         }
     }
 
@@ -237,6 +272,7 @@ async def upload_video(file: UploadFile = File(...)):
         transcribe_progress[video_id] = {
             "status": "uploaded",
             "progress": 0,
+            "filename": file.filename,
             "timestamp": datetime.now().isoformat()
         }
         
@@ -278,13 +314,13 @@ def transcribe_video_task(video_id: str):
         
         update_progress(video_id, "processing_words", 50)
         
-        # Extract words with timestamps
+        # Extract words with timestamps - UPPERCASE
         words = []
         for segment in result["segments"]:
             if "words" in segment:
                 for word_info in segment["words"]:
                     words.append({
-                        "word": word_info["word"].strip(),
+                        "word": word_info["word"].strip().upper(),  # UPPERCASE FIX
                         "start": round(word_info["start"], 2),
                         "end": round(word_info["end"], 2)
                     })
@@ -296,12 +332,12 @@ def transcribe_video_task(video_id: str):
         create_ass_subtitle(words, ass_path)
         logger.info(f"ASS file created: {ass_path}")
         
-        # Save JSON subtitle for reference
+        # Save JSON subtitle for reference - UPPERCASE
         subtitle_data = {
             "video_id": video_id,
             "language": "id",
             "words": words,
-            "full_text": result["text"]
+            "full_text": result["text"].upper()  # UPPERCASE FIX
         }
         
         json_path = SUBTITLES_DIR / f"{video_id}.json"
@@ -313,6 +349,13 @@ def transcribe_video_task(video_id: str):
         # Burn subtitle to video
         output_path = OUTPUT_DIR / f"{video_id}_subtitled{video_path.suffix}"
         burn_subtitle_to_video(video_path, ass_path, output_path)
+        
+        # Get video duration (approximate from last word timestamp)
+        duration = words[-1]['end'] if words else 0
+        
+        # Save to history
+        filename = transcribe_progress[video_id].get("filename", "unknown")
+        save_to_history(video_id, filename, len(words), duration)
         
         logger.info(f"Video with Opus Clip style subtitle created: {output_path}")
         logger.info(f"Total words: {len(words)}")
@@ -422,6 +465,24 @@ async def get_subtitle(video_id: str):
         raise
     except Exception as e:
         logger.error(f"Error loading subtitle: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/history")
+async def get_history():
+    """Get processing history"""
+    try:
+        history_file = HISTORY_DIR / "history.json"
+        
+        if not history_file.exists():
+            return {"history": []}
+        
+        with open(history_file, 'r', encoding='utf-8') as f:
+            history = json.load(f)
+        
+        return {"history": history}
+    except Exception as e:
+        logger.error(f"Error loading history: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
