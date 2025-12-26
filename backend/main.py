@@ -11,7 +11,8 @@ from config import (
     init_directories, DEVICE, MODEL_NAME, MAX_DURATION_SECONDS,
     CLIP_DURATION, TOP_CLIPS_COUNT, AUDIO_DIR, CLIPS_DIR, 
     SUBTITLES_DIR, OUTPUT_DIR, HISTORY_DIR, logger,
-    CONTEXT_CLIP_MIN_DURATION, CONTEXT_CLIP_MAX_DURATION, CONTEXT_DURATION_FLEX
+    CONTEXT_CLIP_MIN_DURATION, CONTEXT_CLIP_MAX_DURATION, CONTEXT_DURATION_FLEX,
+    GEMINI_API_KEY, GEMINI_MODEL, GEMINI_TIMEOUT, GEMINI_MAX_RETRIES
 )
 
 # Import models
@@ -29,6 +30,7 @@ from services.clip_service import ClipDetectionService
 from services.context_analysis_service import ContextAnalysisService  # 🆕 NEW
 from services.subtitle_service import SubtitleService
 from services.video_service import VideoProcessingService
+from services.gemini_viral_analyzer import GeminiViralAnalyzer
 
 # Import utils
 from utils.time_utils import parse_range_percent
@@ -62,6 +64,17 @@ context_service = ContextAnalysisService()  # 🆕 NEW
 subtitle_service = SubtitleService()
 video_service = VideoProcessingService()
 
+# Initialize services gemini
+gemini_analyzer = None
+if GEMINI_API_KEY:
+    try:
+        gemini_analyzer = GeminiViralAnalyzer(GEMINI_API_KEY, GEMINI_MODEL)
+        logger.info("✅ Gemini Viral Analyzer enabled")
+    except Exception as e:
+        logger.warning(f"⚠️ Gemini Viral Analyzer disabled: {e}")
+else:
+    logger.warning("⚠️ GEMINI_API_KEY not set - viral mode unavailable")
+
 
 class VideoProcessor:
     """Main video processing orchestrator"""
@@ -71,14 +84,15 @@ class VideoProcessor:
         self.audio = audio_service
         self.transcription = transcription_service
         self.clip = clip_service
-        self.context = context_service  # 🆕 NEW
+        self.context = context_service
+        self.gemini = gemini_analyzer  # 🆕 NEW
         self.subtitle = subtitle_service
         self.video = video_service
         self.progress = progress_repo
         self.history = history_repo
     
     def process(self, video_id: str, youtube_url: str, clip_duration: int, 
-                range_percent: str, generate_mode: str = "audio"):  # 🆕 NEW parameter
+                range_percent: str, generate_mode: str = "audio"):
         """Main processing pipeline with mode selection"""
         try:
             # Step 1: Validate video
@@ -109,11 +123,46 @@ class VideoProcessor:
                                "Transcribing audio with Whisper AI...")
             result = self.transcription.transcribe(audio_path)
             
-            # 🆕 Step 5: MODE SELECTION - Audio vs Context
-            if generate_mode == "context":
+            # 🆕 Step 5: MODE SELECTION - Audio / Context / Viral
+            if generate_mode == "viral":
+                # 🔥 VIRAL MODE: Gemini-powered viral analysis
+                if not self.gemini:
+                    raise Exception("Gemini Viral Analyzer not available. Check GEMINI_API_KEY.")
+                
+                self.progress.update(video_id, "analyzing", 40, 
+                                   "🔥 Analyzing viral potential with Gemini AI...")
+                
+                # Prepare transcript for Gemini
+                transcript_segments = [
+                    {
+                        'start': seg['start'],
+                        'end': seg['end'],
+                        'text': seg['text']
+                    }
+                    for seg in result.get('segments', [])
+                ]
+                
+                # Call Gemini analyzer
+                viral_result = self.gemini.analyze_viral_segments(
+                    youtube_url=youtube_url,
+                    video_duration=actual_duration,
+                    transcript=transcript_segments,
+                    language="id",  # or detect from video_info
+                    max_retries=GEMINI_MAX_RETRIES,
+                    timeout=GEMINI_TIMEOUT
+                )
+                
+                self.progress.update(video_id, "selecting_clips", 50, 
+                                   f"Selecting top {TOP_CLIPS_COUNT} viral segments...")
+                
+                # Convert to clipper format
+                gemini_clips = self.gemini.format_for_clipper(viral_result)
+                top_clips = self.clip.find_top_clips_by_viral(gemini_clips)
+                
+            elif generate_mode == "context":
                 # CONTEXT MODE: Semantic analysis
                 self.progress.update(video_id, "analyzing", 40, 
-                                   "Analyzing conversation context for meaningful clips...")
+                                   "Analyzing conversation context...")
                 
                 analyzed_segments = self.context.analyze_transcript_for_clips(
                     result, clip_duration, CONTEXT_DURATION_FLEX
@@ -140,10 +189,10 @@ class VideoProcessor:
                     engagement_windows, clip_duration, TOP_CLIPS_COUNT
                 )
             
-            # Step 7: Process each clip (same for both modes)
+            # Rest of processing remains the same...
             clips_output = self._process_clips(
                 video_id, youtube_url, top_clips, clip_duration, 
-                range_start, result, generate_mode  # 🆕 Pass mode
+                range_start, result, generate_mode
             )
             
             # Step 8: Finalize
@@ -179,15 +228,15 @@ class VideoProcessor:
             self.progress.update(video_id, "error", 0, str(e))
     
     def _process_clips(self, video_id: str, youtube_url: str, top_clips: List[dict], 
-                      clip_duration: int, range_start: float, transcription_result: dict,
-                      generate_mode: str = "audio") -> List[dict]:  # 🆕 NEW parameter
+                  clip_duration: int, range_start: float, transcription_result: dict,
+                  generate_mode: str = "audio") -> List[dict]:
         """Process each individual clip"""
         clips_output = []
         
         for idx, clip_info in enumerate(top_clips):
             progress = 50 + (idx * 8)
             self.progress.update(video_id, "processing_clip", progress, 
-                               f"Processing clip {idx + 1}/{len(top_clips)}...")
+                            f"Processing clip {idx + 1}/{len(top_clips)}...")
             
             clip_id = f"{video_id}_clip_{idx + 1}"
             
@@ -197,7 +246,7 @@ class VideoProcessor:
             absolute_clip_start = range_start + clip_start_in_range
             absolute_clip_end = range_start + clip_end_in_range
             
-            # Actual duration (may vary in context mode)
+            # Actual duration
             actual_clip_duration = int(clip_end_in_range - clip_start_in_range)
             
             # Download video clip
@@ -206,11 +255,11 @@ class VideoProcessor:
             if not self.youtube.download_video_clip(youtube_url, absolute_clip_start, 
                                                     actual_clip_duration, raw_clip_path):
                 if not self.youtube.extract_clip_with_ffmpeg(youtube_url, absolute_clip_start, 
-                                                             actual_clip_duration, raw_clip_path):
+                                                            actual_clip_duration, raw_clip_path):
                     logger.warning(f"Failed to download clip {idx + 1}, skipping...")
                     continue
             
-            # Extract words for this clip
+            # Extract words for subtitle
             clip_words = self.subtitle.extract_clip_words(
                 transcription_result, clip_start_in_range, clip_end_in_range
             )
@@ -223,7 +272,7 @@ class VideoProcessor:
             output_path = OUTPUT_DIR / f"{clip_id}_subtitled.mp4"
             self.video.burn_subtitle(raw_clip_path, ass_path, output_path)
             
-            # Save clip info (🆕 include context reason if available)
+            # Save clip info
             clip_data = {
                 "clip_id": clip_id,
                 "clip_number": idx + 1,
@@ -235,13 +284,21 @@ class VideoProcessor:
                 "word_count": len(clip_words)
             }
             
-            # 🆕 Add context-specific data if in context mode
+            # Add mode-specific metadata
             if generate_mode == "context":
                 clip_data["context_reason"] = clip_info.get('context_reason', 'Valuable segment')
                 clip_data["text_preview"] = clip_info.get('text_preview', '')
             
+            elif generate_mode == "viral":
+                # 🆕 Add viral-specific metadata
+                clip_data["viral_category"] = clip_info.get('viral_category', 'value')
+                clip_data["hook_text"] = clip_info.get('hook_text', '')
+                clip_data["suggested_caption"] = clip_info.get('suggested_caption', '')
+                clip_data["loop_hint"] = clip_info.get('loop_hint', 'N/A')
+                clip_data["reason"] = clip_info.get('reason', 'Selected by Gemini')
+            
             clips_output.append(clip_data)
-        
+    
         return clips_output
     
     def _save_metadata(self, video_id: str, youtube_url: str, video_info: dict, 
@@ -335,7 +392,7 @@ async def process_youtube(request: YouTubeRequest, background_tasks: BackgroundT
         
         # 🆕 Validate generate_mode
         generate_mode = request.generate_mode or "audio"
-        if generate_mode not in ["audio", "context"]:
+        if generate_mode not in ["audio", "context", "viral"]:
             raise HTTPException(
                 status_code=400,
                 detail="Invalid generate_mode. Use 'audio' or 'context'"

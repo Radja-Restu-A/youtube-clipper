@@ -1,6 +1,11 @@
 from pathlib import Path
+from dotenv import load_dotenv
 import torch
 import logging
+import os
+
+#initiate environment variables
+load_dotenv()
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -21,10 +26,17 @@ CLIP_DURATION = 45  # seconds per clip
 TOP_CLIPS_COUNT = 5
 MODEL_NAME = "small"
 
-# 🆕 NEW: Context Analysis Settings
-CONTEXT_CLIP_MIN_DURATION = 30  # Minimum clip duration for context mode
-CONTEXT_CLIP_MAX_DURATION = 60  # Maximum clip duration for context mode
-CONTEXT_DURATION_FLEX = 15      # Flexibility in duration (±seconds)
+# Context Analysis Settings
+CONTEXT_CLIP_MIN_DURATION = 30
+CONTEXT_CLIP_MAX_DURATION = 60
+CONTEXT_DURATION_FLEX = 15
+
+# 🆕 NEW: Gemini Viral Analyzer Settings
+
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")  # Set in environment
+GEMINI_MODEL = "gemini-1.5-flash"  # Fast and cost-effective
+GEMINI_TIMEOUT = 30  # seconds
+GEMINI_MAX_RETRIES = 3
 
 # Device detection
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
