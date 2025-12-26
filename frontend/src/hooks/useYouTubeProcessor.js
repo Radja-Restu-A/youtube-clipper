@@ -6,6 +6,7 @@ export const useYouTubeProcessor = (progressHook, onHistoryUpdate) => {
   const [youtubeUrl, setYoutubeUrl] = useState('');
   const [videoId, setVideoId] = useState('');
   const [rangePercent, setRangePercent] = useState('0-100');
+  const [generateMode, setGenerateMode] = useState('audio'); // 🆕 NEW
   const [isProcessing, setIsProcessing] = useState(false);
   const [error, setError] = useState('');
   const [isCompleted, setIsCompleted] = useState(false);
@@ -47,7 +48,7 @@ export const useYouTubeProcessor = (progressHook, onHistoryUpdate) => {
     setVideoInfo(null);
     
     try {
-      const data = await api.processVideo(youtubeUrl, 45, rangePercent);
+      const data = await api.processVideo(youtubeUrl, 45, rangePercent, generateMode); // 🆕 Pass mode
       setVideoId(data.video_id);
       progressHook.startPolling(data.video_id);
     } catch (error) {
@@ -62,6 +63,8 @@ export const useYouTubeProcessor = (progressHook, onHistoryUpdate) => {
     videoId,
     rangePercent,
     setRangePercent,
+    generateMode,        // 🆕 NEW
+    setGenerateMode,     // 🆕 NEW
     isProcessing,
     error,
     setError,

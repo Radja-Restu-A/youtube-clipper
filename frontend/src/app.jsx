@@ -59,6 +59,8 @@ export default function App() {
           onUrlChange={processor.setYoutubeUrl}
           rangePercent={processor.rangePercent}
           onRangeChange={processor.setRangePercent}
+          generateMode={processor.generateMode}
+          onGenerateModeChange={processor.setGenerateMode}
           rangeOptions={RANGE_OPTIONS}
           isProcessing={processor.isProcessing}
           isCompleted={processor.isCompleted}
@@ -70,13 +72,13 @@ export default function App() {
           clipsCount={processor.clips.length}
         />
 
-        <ClipsGrid
-          clips={processor.clips}
-          rangePercent={processor.rangePercent}
-          rangeOptions={RANGE_OPTIONS}
-          onPreview={setSelectedClip}
-          onDownload={handleDownloadClip}
-        />
+        {processor.isCompleted && processor.clips.length > 0 && (
+          <ClipsGrid
+            clips={processor.clips}
+            videoId={processor.videoId}
+            generateMode={processor.generateMode}  // 🆕 Pass mode
+          />
+        )}
 
         <VideoPreview
           clip={selectedClip}
