@@ -10,7 +10,8 @@ from datetime import datetime
 from config import (
     init_directories, DEVICE, MODEL_NAME, MAX_DURATION_SECONDS,
     CLIP_DURATION, TOP_CLIPS_COUNT, AUDIO_DIR, CLIPS_DIR, 
-    SUBTITLES_DIR, OUTPUT_DIR, HISTORY_DIR, logger
+    SUBTITLES_DIR, OUTPUT_DIR, HISTORY_DIR, logger,
+    CONTEXT_CLIP_MIN_DURATION, CONTEXT_CLIP_MAX_DURATION, CONTEXT_DURATION_FLEX
 )
 
 # Import models
@@ -25,6 +26,7 @@ from services.youtube_service import YouTubeService
 from services.audio_service import AudioAnalysisService
 from services.transcription_service import TranscriptionService
 from services.clip_service import ClipDetectionService
+from services.context_analysis_service import ContextAnalysisService  # 🆕 NEW
 from services.subtitle_service import SubtitleService
 from services.video_service import VideoProcessingService
 
@@ -56,6 +58,7 @@ transcription_service = TranscriptionService(MODEL_NAME, DEVICE)
 youtube_service = YouTubeService()
 audio_service = AudioAnalysisService()
 clip_service = ClipDetectionService()
+context_service = ContextAnalysisService()  # 🆕 NEW
 subtitle_service = SubtitleService()
 video_service = VideoProcessingService()
 
@@ -68,13 +71,15 @@ class VideoProcessor:
         self.audio = audio_service
         self.transcription = transcription_service
         self.clip = clip_service
+        self.context = context_service  # 🆕 NEW
         self.subtitle = subtitle_service
         self.video = video_service
         self.progress = progress_repo
         self.history = history_repo
     
-    def process(self, video_id: str, youtube_url: str, clip_duration: int, range_percent: str):
-        """Main processing pipeline"""
+    def process(self, video_id: str, youtube_url: str, clip_duration: int, 
+                range_percent: str, generate_mode: str = "audio"):  # 🆕 NEW parameter
+        """Main processing pipeline with mode selection"""
         try:
             # Step 1: Validate video
             self.progress.update(video_id, "validating", 5, "Validating YouTube video...")
@@ -85,6 +90,7 @@ class VideoProcessor:
                 raise Exception(f"Video too long: {total_duration}s (max: {MAX_DURATION_SECONDS}s)")
             
             logger.info(f"Video: {video_info['title']} - {total_duration}s")
+            logger.info(f"🎯 Generation Mode: {generate_mode.upper()}")
             
             # Step 2: Parse range
             range_start, range_end = parse_range_percent(range_percent, total_duration)
@@ -103,26 +109,49 @@ class VideoProcessor:
                                "Transcribing audio with Whisper AI...")
             result = self.transcription.transcribe(audio_path)
             
-            # Step 5: Analyze audio
-            self.progress.update(video_id, "analyzing", 40, 
-                               "Analyzing audio for best clips...")
-            engagement_windows = self.audio.analyze_engagement(audio_path)
+            # 🆕 Step 5: MODE SELECTION - Audio vs Context
+            if generate_mode == "context":
+                # CONTEXT MODE: Semantic analysis
+                self.progress.update(video_id, "analyzing", 40, 
+                                   "Analyzing conversation context for meaningful clips...")
+                
+                analyzed_segments = self.context.analyze_transcript_for_clips(
+                    result, clip_duration, CONTEXT_DURATION_FLEX
+                )
+                
+                self.progress.update(video_id, "selecting_clips", 50, 
+                                   f"Selecting top {TOP_CLIPS_COUNT} clips by semantic value...")
+                
+                top_clips = self.clip.find_top_clips_by_context(
+                    analyzed_segments, TOP_CLIPS_COUNT
+                )
+                
+            else:
+                # AUDIO MODE: Engagement-based (original)
+                self.progress.update(video_id, "analyzing", 40, 
+                                   "Analyzing audio for best clips...")
+                
+                engagement_windows = self.audio.analyze_engagement(audio_path)
+                
+                self.progress.update(video_id, "selecting_clips", 50, 
+                                   f"Selecting top {TOP_CLIPS_COUNT} clips...")
+                
+                top_clips = self.clip.find_top_clips(
+                    engagement_windows, clip_duration, TOP_CLIPS_COUNT
+                )
             
-            # Step 6: Find top clips
-            self.progress.update(video_id, "selecting_clips", 50, 
-                               f"Selecting top {TOP_CLIPS_COUNT} clips...")
-            top_clips = self.clip.find_top_clips(engagement_windows, clip_duration, TOP_CLIPS_COUNT)
-            
-            # Step 7: Process each clip
+            # Step 7: Process each clip (same for both modes)
             clips_output = self._process_clips(
                 video_id, youtube_url, top_clips, clip_duration, 
-                range_start, result
+                range_start, result, generate_mode  # 🆕 Pass mode
             )
             
             # Step 8: Finalize
             self.progress.update(video_id, "finalizing", 95, "Finalizing...")
-            self._save_metadata(video_id, youtube_url, video_info, range_percent, 
-                              range_start, range_end, actual_duration, clips_output)
+            self._save_metadata(
+                video_id, youtube_url, video_info, range_percent, 
+                range_start, range_end, actual_duration, clips_output, generate_mode  # 🆕 Pass mode
+            )
             
             # Save history
             self.history.save(video_id, video_info, clips_output, range_percent)
@@ -131,24 +160,27 @@ class VideoProcessor:
             self._cleanup(video_id)
             
             # Complete
+            mode_label = "context-based" if generate_mode == "context" else "audio-based"
             self.progress.update(video_id, "completed", 100, 
-                               f"Completed! {len(clips_output)} clips ready")
+                               f"Completed! {len(clips_output)} {mode_label} clips ready")
             self.progress.add_metadata(
                 video_id,
                 clips=clips_output,
                 video_info=video_info,
                 range_percent=range_percent,
-                total_clips=len(clips_output)
+                total_clips=len(clips_output),
+                generate_mode=generate_mode  # 🆕 NEW
             )
             
-            logger.info(f"Processing completed for {video_id}")
+            logger.info(f"Processing completed for {video_id} (mode: {generate_mode})")
             
         except Exception as e:
             logger.error(f"Processing error: {str(e)}")
             self.progress.update(video_id, "error", 0, str(e))
     
     def _process_clips(self, video_id: str, youtube_url: str, top_clips: List[dict], 
-                      clip_duration: int, range_start: float, transcription_result: dict) -> List[dict]:
+                      clip_duration: int, range_start: float, transcription_result: dict,
+                      generate_mode: str = "audio") -> List[dict]:  # 🆕 NEW parameter
         """Process each individual clip"""
         clips_output = []
         
@@ -165,13 +197,16 @@ class VideoProcessor:
             absolute_clip_start = range_start + clip_start_in_range
             absolute_clip_end = range_start + clip_end_in_range
             
+            # Actual duration (may vary in context mode)
+            actual_clip_duration = int(clip_end_in_range - clip_start_in_range)
+            
             # Download video clip
             raw_clip_path = CLIPS_DIR / f"{clip_id}_raw.mp4"
             
             if not self.youtube.download_video_clip(youtube_url, absolute_clip_start, 
-                                                    clip_duration, raw_clip_path):
+                                                    actual_clip_duration, raw_clip_path):
                 if not self.youtube.extract_clip_with_ffmpeg(youtube_url, absolute_clip_start, 
-                                                             clip_duration, raw_clip_path):
+                                                             actual_clip_duration, raw_clip_path):
                     logger.warning(f"Failed to download clip {idx + 1}, skipping...")
                     continue
             
@@ -188,23 +223,31 @@ class VideoProcessor:
             output_path = OUTPUT_DIR / f"{clip_id}_subtitled.mp4"
             self.video.burn_subtitle(raw_clip_path, ass_path, output_path)
             
-            # Save clip info
-            clips_output.append({
+            # Save clip info (🆕 include context reason if available)
+            clip_data = {
                 "clip_id": clip_id,
                 "clip_number": idx + 1,
                 "start_time": absolute_clip_start,
                 "end_time": absolute_clip_end,
-                "duration": clip_duration,
+                "duration": actual_clip_duration,
                 "engagement_score": clip_info['engagement_score'],
                 "output_file": str(output_path),
                 "word_count": len(clip_words)
-            })
+            }
+            
+            # 🆕 Add context-specific data if in context mode
+            if generate_mode == "context":
+                clip_data["context_reason"] = clip_info.get('context_reason', 'Valuable segment')
+                clip_data["text_preview"] = clip_info.get('text_preview', '')
+            
+            clips_output.append(clip_data)
         
         return clips_output
     
     def _save_metadata(self, video_id: str, youtube_url: str, video_info: dict, 
                       range_percent: str, range_start: float, range_end: float, 
-                      actual_duration: float, clips: List[dict]):
+                      actual_duration: float, clips: List[dict], 
+                      generate_mode: str = "audio"):  # 🆕 NEW parameter
         """Save processing metadata"""
         metadata = {
             "video_id": video_id,
@@ -216,6 +259,7 @@ class VideoProcessor:
                 "end": range_end,
                 "duration": actual_duration
             },
+            "generate_mode": generate_mode,  # 🆕 NEW
             "total_clips": len(clips),
             "clips": clips,
             "processed_at": datetime.now().isoformat()
@@ -253,12 +297,14 @@ def read_root():
             "YouTube URL input (no full download)",
             "Audio-first processing",
             "Range selector (0-25, 26-50, 51-75, 76-100)",
-            "Auto clip detection (engagement-based)",
+            "🆕 TWO GENERATION MODES:",
+            "  - Audio Mode: Engagement-based (sound intensity)",
+            "  - Context Mode: Semantic-based (conversation meaning)",
             "Top 5 clips with burned subtitles",
             "Max duration: 2 hours"
         ],
         "endpoints": {
-            "POST /process": "Process YouTube video",
+            "POST /process": "Process YouTube video (add generate_mode: 'audio' | 'context')",
             "GET /progress/{video_id}": "Get processing progress",
             "GET /download/{video_id}/{clip_number}": "Download specific clip",
             "GET /clips/{video_id}": "Get all clips info",
@@ -287,11 +333,20 @@ async def process_youtube(request: YouTubeRequest, background_tasks: BackgroundT
                     detail="Invalid range_percent. Use format: '0-25', '26-50', '51-75', or '76-100'"
                 )
         
+        # 🆕 Validate generate_mode
+        generate_mode = request.generate_mode or "audio"
+        if generate_mode not in ["audio", "context"]:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid generate_mode. Use 'audio' or 'context'"
+            )
+        
         # Generate video ID
         video_id = str(uuid.uuid4())
         
         # Initialize progress
-        progress_repo.update(video_id, "queued", 0, "Video queued for processing")
+        mode_label = "context-based" if generate_mode == "context" else "audio-based"
+        progress_repo.update(video_id, "queued", 0, f"Video queued for {mode_label} processing")
         
         # Start processing in background
         background_tasks.add_task(
@@ -299,14 +354,16 @@ async def process_youtube(request: YouTubeRequest, background_tasks: BackgroundT
             video_id,
             request.youtube_url,
             request.clip_duration or CLIP_DURATION,
-            request.range_percent or "0-100"
+            request.range_percent or "0-100",
+            generate_mode  # 🆕 Pass mode
         )
         
         return {
             "status": "processing",
             "video_id": video_id,
             "range_percent": request.range_percent or "0-100",
-            "message": "Processing started. Use /progress/{video_id} to check status"
+            "generate_mode": generate_mode,  # 🆕 NEW
+            "message": f"Processing started in {mode_label} mode. Use /progress/{{video_id}} to check status"
         }
         
     except HTTPException:

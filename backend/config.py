@@ -21,6 +21,11 @@ CLIP_DURATION = 45  # seconds per clip
 TOP_CLIPS_COUNT = 5
 MODEL_NAME = "small"
 
+# 🆕 NEW: Context Analysis Settings
+CONTEXT_CLIP_MIN_DURATION = 30  # Minimum clip duration for context mode
+CONTEXT_CLIP_MAX_DURATION = 60  # Maximum clip duration for context mode
+CONTEXT_DURATION_FLEX = 15      # Flexibility in duration (±seconds)
+
 # Device detection
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
