@@ -5,6 +5,7 @@ backend/output/
 backend/subtitles/
 backend/videos/
 backend/clips
+backend/audio
 
 # Python cache & env
 __pycache__/
