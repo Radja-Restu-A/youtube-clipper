@@ -2,28 +2,15 @@ import google.generativeai as genai
 import json
 import time
 from typing import Dict, List, Optional
-from pathlib import Path
 
 class GeminiViralAnalyzer:
     """
     Google Gemini-powered viral segment analyzer for TikTok/Reels/Shorts
     
-    Analyzes transcripts to find top 5 viral-worthy segments based on:
-    - Hook quality (first 3 seconds)
-    - High-emotion moments
-    - Value bombs (instant education/motivation)
-    - Controversial/strong opinions
-    - Loopability
+    CRITICAL: Finds HOOKS (first 3 seconds) then extends to full 30-60s clips
     """
     
     def __init__(self, api_key: str, model_name: str = "gemini-1.5-flash"):
-        """
-        Initialize Gemini analyzer
-        
-        Args:
-            api_key: Google Gemini API key
-            model_name: Model to use (default: gemini-1.5-flash for speed)
-        """
         from config import logger
         
         self.logger = logger
@@ -43,32 +30,30 @@ class GeminiViralAnalyzer:
         video_duration: float,
         transcript: List[Dict],
         language: str = "id",
+        clip_duration: int = 45,
         max_retries: int = 3,
-        timeout: int = 30
+        timeout: int = 45
     ) -> Dict:
         """
         Analyze transcript and find top 5 viral-worthy segments
         
-        Args:
-            youtube_url: YouTube video URL
-            video_duration: Total video duration in seconds
-            transcript: Whisper transcript segments
-            language: Video language (id/en)
-            max_retries: Max retry attempts
-            timeout: Request timeout in seconds
-        
-        Returns:
-            Structured viral analysis result
+        LOGIC:
+        1. Gemini identifies HOOK moments (powerful 3-second openers)
+        2. Extend each hook to full clip (30-60 seconds of natural conversation)
+        3. Score the entire clip (hook quality + content value)
         """
         self.logger.info(f"🔍 Analyzing viral segments for {youtube_url}")
-        self.logger.info(f"   Duration: {video_duration}s | Segments: {len(transcript)} | Language: {language}")
+        self.logger.info(f"   Duration: {video_duration}s | Segments: {len(transcript)} | Target clip: {clip_duration}s")
         
-        # Build prompt
+        if not transcript or len(transcript) == 0:
+            raise ValueError("Empty transcript provided")
+        
+        # Build prompt with correct logic
         prompt = self._build_viral_analysis_prompt(
-            youtube_url, video_duration, transcript, language
+            youtube_url, video_duration, transcript, language, clip_duration
         )
         
-        # Call Gemini with retry logic
+        # Call Gemini with retry
         for attempt in range(1, max_retries + 1):
             try:
                 self.logger.info(f"📡 Calling Gemini API (attempt {attempt}/{max_retries})...")
@@ -76,205 +61,337 @@ class GeminiViralAnalyzer:
                 response = self.model.generate_content(
                     prompt,
                     generation_config=genai.types.GenerationConfig(
-                        temperature=0.7,
+                        temperature=0.85,
                         top_p=0.95,
                         top_k=40,
-                        max_output_tokens=2048,
+                        max_output_tokens=4096,
                     ),
                     request_options={"timeout": timeout}
                 )
                 
-                # Extract and validate response
-                result = self._parse_and_validate_response(response)
+                result = self._parse_and_validate_response(
+                    response, transcript, video_duration, clip_duration
+                )
                 
-                self.logger.info(f"✅ Gemini analysis complete! Found {len(result['top_clips'])} viral segments")
+                self.logger.info(f"✅ Gemini analysis complete! {len(result['top_clips'])} clips")
+                
+                # Log details
+                for i, clip in enumerate(result['top_clips']):
+                    hook_duration = 3  # First 3 seconds
+                    content_duration = clip['duration'] - hook_duration
+                    self.logger.info(
+                        f"  🔥 Clip {i+1}: {clip['start_time']:.1f}s-{clip['end_time']:.1f}s "
+                        f"(Hook: {hook_duration}s + Content: {content_duration:.0f}s) | "
+                        f"Score: {clip['viral_score']:.1f} | {clip['category']}"
+                    )
+                    self.logger.info(f"     Hook: \"{clip['hook_text'][:60]}...\"")
+                
                 return result
                 
-            except json.JSONDecodeError as e:
-                self.logger.error(f"⚠️ JSON parse error (attempt {attempt}): {e}")
-                if attempt == max_retries:
-                    return self._fallback_analysis(transcript, video_duration)
-                time.sleep(2 ** attempt)  # Exponential backoff
-                
             except Exception as e:
-                self.logger.error(f"⚠️ Gemini API error (attempt {attempt}): {e}")
+                self.logger.error(f"⚠️ Attempt {attempt} failed: {e}")
                 if attempt == max_retries:
-                    return self._fallback_analysis(transcript, video_duration)
+                    self.logger.warning("❌ All retries failed, using fallback")
+                    return self._fallback_analysis(transcript, video_duration, clip_duration)
                 time.sleep(2 ** attempt)
         
-        # Should never reach here, but just in case
-        return self._fallback_analysis(transcript, video_duration)
+        return self._fallback_analysis(transcript, video_duration, clip_duration)
     
     def _build_viral_analysis_prompt(
         self,
         youtube_url: str,
         video_duration: float,
         transcript: List[Dict],
-        language: str
+        language: str,
+        clip_duration: int
     ) -> str:
-        """Build the Gemini prompt for viral analysis"""
+        """Build prompt with CORRECT hook + content logic"""
         
-        # Prepare transcript text
-        transcript_text = self._format_transcript_for_prompt(transcript)
+        # Format transcript
+        transcript_lines = []
+        for seg in transcript:
+            ts = f"[{seg['start']:.1f}s → {seg['end']:.1f}s]"
+            text = seg.get('text', '').strip()
+            if text:
+                transcript_lines.append(f"{ts} {text}")
         
-        lang_context = "Indonesian (with occasional English code-switching)" if language == "id" else "English"
+        transcript_text = "\n".join(transcript_lines)
+        lang_context = "Indonesian podcast (may have English)" if language == "id" else "English"
         
-        prompt = f"""You are an expert TikTok/Reels/Shorts content analyzer. Your task is to identify the TOP 5 most viral-worthy segments from this video transcript.
+        prompt = f"""You are an expert TikTok/Reels/Shorts content strategist analyzing podcast clips.
 
-VIDEO METADATA:
-- URL: {youtube_url}
-- Duration: {video_duration} seconds
-- Language: {lang_context}
+VIDEO INFO:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+URL: {youtube_url}
+Duration: {video_duration:.1f}s
+Language: {lang_context}
+Target Clip Length: {clip_duration} seconds
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-TRANSCRIPT:
+FULL TRANSCRIPT:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 {transcript_text}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-ANALYSIS CRITERIA (MANDATORY):
-1. **The Hook (First 3 seconds)**: Opening that immediately grabs attention or sparks curiosity
-2. **High-Emotion Moments**: Shocking statements, contagious laughter, touching moments
-3. **Value Bombs**: Quick insights that deliver instant education or motivation
-4. **Controversial/Strong Opinions**: Statements likely to trigger comments and debate
-5. **Loopability**: Segments where the ending can smoothly connect back to the beginning
+🎯 YOUR TASK:
+Find the TOP 5 viral-worthy HOOK MOMENTS in this podcast, then extend each to a full clip.
 
-REQUIREMENTS:
-✅ Select EXACTLY 5 segments
-✅ Each segment must be 15-60 seconds (ideal: 30-45 seconds)
-✅ NO overlapping timestamps
-✅ AVOID: Long intros, filler words, subscribe CTAs, dead air
-✅ Prioritize segments with clear hooks and strong emotional peaks
-✅ Consider Indonesian viral trends (relatable stories, controversial takes, life lessons)
+⚠️ CRITICAL UNDERSTANDING - CLIP STRUCTURE:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-OUTPUT FORMAT (CRITICAL):
-Return ONLY valid JSON, no markdown, no explanations, no extra text.
+Each clip has TWO parts:
+
+1. THE HOOK (First 3 seconds)
+   ├─ The attention-grabbing opening statement
+   ├─ Must create curiosity/shock/interest INSTANTLY
+   └─ Examples:
+       • "Jadi rahasia yang gak pernah gue kasih tau adalah..."
+       • "Ini kesalahan terbesar yang orang lakukan..."
+       • "Gue bakal jujur, most people are wrong about..."
+
+2. THE CONTENT (Remaining 27-57 seconds)
+   ├─ Natural conversation that FOLLOWS the hook
+   ├─ Can be explanation, story, debate, insights
+   ├─ Doesn't need to be "perfect" - natural podcast flow is good
+   └─ Just needs to maintain interest after the hook
+
+TOTAL CLIP = HOOK (3s) + CONTENT (27-57s) = 30-60 seconds
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+SELECTION CRITERIA:
+
+1. **HOOK QUALITY** (40% weight)
+   - First 3 seconds must GRAB attention
+   - Creates immediate curiosity
+   - Shocking/controversial/intriguing statement
+   - NOT generic like "jadi gini..." or "oke guys..."
+
+2. **CONTENT VALUE** (25% weight)
+   - The 30-60s following the hook delivers value
+   - Can be: story, insight, explanation, debate, humor
+   - Keeps viewer engaged after the hook
+
+3. **EMOTIONAL PEAK** (20% weight)
+   - Has emotional high point (surprise, laugh, inspiration)
+   - Passionate delivery or strong opinion
+   - Relatable or touching moment
+
+4. **VIRALITY POTENTIAL** (15% weight)
+   - Will people comment/share?
+   - Controversial or thought-provoking?
+   - Quotable or meme-worthy?
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHAT TO AVOID:
+❌ Long intros without hook ("oke jadi hari ini kita bahas...")
+❌ Filler segments with low information density
+❌ Subscribe CTAs or outros
+❌ Pure silence or background noise
+❌ Incomplete thoughts that need prior context
+
+TECHNICAL REQUIREMENTS:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+✅ Find 5 DIFFERENT hook moments
+✅ Each clip is 30-60 seconds total (hook + content)
+✅ Use EXACT timestamps from transcript
+✅ NO overlapping clips
+✅ Each clip must have UNIQUE content/hook/theme
+
+SCORING (0-100):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+95-100: PERFECT hook + amazing content + highly viral
+85-94:  STRONG hook + good content + high viral potential
+70-84:  GOOD hook + decent content + moderate viral potential
+50-69:  OKAY hook + acceptable content
+<50:    DON'T SELECT (weak hook or poor content)
+
+OUTPUT FORMAT (STRICT JSON ONLY):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 {{
   "top_clips": [
     {{
       "rank": 1,
-      "start_time": <float>,
-      "end_time": <float>,
-      "duration": <float>,
-      "hook_text": "<first impactful sentence>",
-      "reason": "<why this segment will go viral>",
-      "viral_score": <0-100>,
-      "category": "<hook|emotional|value|controversial|storytelling>",
-      "suggested_caption": "<catchy caption for social media>",
-      "loop_hint": "<how to loop this clip, or 'N/A'>"
+      "start_time": <timestamp where HOOK starts>,
+      "end_time": <start_time + 30 to 60 seconds>,
+      "duration": <end_time - start_time>,
+      "hook_text": "<EXACT text of the hook (first 3 seconds)>",
+      "content_summary": "<brief summary of the full 30-60s clip content>",
+      "reason": "<why this HOOK+CONTENT combo is viral-worthy>",
+      "viral_score": <70-100>,
+      "category": "hook|emotional|value|controversial|storytelling",
+      "suggested_caption": "<catchy caption for this specific clip>",
+      "loop_hint": "<how to loop, or 'N/A'>"
     }}
   ]
 }}
 
-SCORING GUIDE:
-- 90-100: Extremely viral (instant hook + emotional peak + shareability)
-- 70-89: High potential (strong hook + clear value)
-- 50-69: Good clip (decent hook + some engagement)
-- Below 50: Filler content (avoid selecting)
+EXAMPLE (structure reference):
+{{
+  "top_clips": [
+    {{
+      "rank": 1,
+      "start_time": 145.2,
+      "end_time": 190.5,
+      "duration": 45.3,
+      "hook_text": "Jadi rahasia yang gak pernah gue kasih tau adalah... investasi terbesar gue bukan di saham",
+      "content_summary": "After the hook, explains how he invested in skills instead of stocks, shares 3 specific examples, and reveals the ROI was 10x better",
+      "reason": "Powerful curiosity hook about a 'secret', then delivers valuable contrarian advice with specific examples. Will spark debate in comments about investment strategies",
+      "viral_score": 94.0,
+      "category": "controversial",
+      "suggested_caption": "Investasi terbesar gue ternyata bukan saham 😱💰 Ini yang gak pernah gue kasih tau... #InvestasiTips #KontenViral",
+      "loop_hint": "Ends with question that loops back to the secret"
+    }},
+    {{
+      "rank": 2,
+      "start_time": 312.8,
+      "end_time": 355.4,
+      "duration": 42.6,
+      "hook_text": "Ini momen paling embarrassing dalam hidup gue, literally nangis di depan 500 orang",
+      "content_summary": "Tells story of bombing on stage, the humiliation, then the lesson learned about resilience and embracing failure",
+      "reason": "Emotional hook about vulnerability, followed by relatable story with clear lesson. High engagement from people sharing their own embarrassing moments",
+      "viral_score": 89.5,
+      "category": "emotional",
+      "suggested_caption": "Momen paling memalukan yang ngajarin gue lesson penting 😭💪 #StoryTime #MotivationMonday",
+      "loop_hint": "N/A"
+    }}
+  ]
+}}
 
-Order by viral_score descending. Ensure timestamps are accurate and match the transcript.
+NOW ANALYZE THE TRANSCRIPT ABOVE.
 
-Now analyze and return ONLY the JSON:"""
+Find 5 DIFFERENT hook moments, extend each to 30-60 seconds, and score the complete clips.
+
+Return ONLY the JSON (no markdown, no explanations):"""
         
         return prompt
     
-    def _format_transcript_for_prompt(self, transcript: List[Dict]) -> str:
-        """Format transcript segments for prompt"""
-        lines = []
-        for seg in transcript:
-            timestamp = f"[{seg['start']:.1f}s - {seg['end']:.1f}s]"
-            text = seg.get('text', '').strip()
-            if text:
-                lines.append(f"{timestamp} {text}")
-        
-        return "\n".join(lines)
-    
-    def _parse_and_validate_response(self, response) -> Dict:
+    def _parse_and_validate_response(
+        self, 
+        response, 
+        transcript: List[Dict], 
+        video_duration: float,
+        target_duration: int
+    ) -> Dict:
         """Parse and validate Gemini response"""
         
-        # Extract text from response
         try:
             response_text = response.text.strip()
         except AttributeError:
             response_text = str(response).strip()
         
-        self.logger.debug(f"Raw Gemini response: {response_text[:500]}...")
-        
-        # Remove markdown code blocks if present
-        if response_text.startswith("```json"):
-            response_text = response_text.replace("```json", "", 1)
-        if response_text.startswith("```"):
-            response_text = response_text.replace("```", "", 1)
-        if response_text.endswith("```"):
-            response_text = response_text.rsplit("```", 1)[0]
+        # Clean markdown
+        if "```json" in response_text:
+            response_text = response_text.split("```json")[1].split("```")[0]
+        elif "```" in response_text:
+            response_text = response_text.split("```")[1].split("```")[0]
         
         response_text = response_text.strip()
         
         # Parse JSON
         try:
             result = json.loads(response_text)
-        except json.JSONDecodeError:
-            # Try to extract JSON from text
-            import re
-            json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
-            if json_match:
-                result = json.loads(json_match.group(0))
-            else:
-                raise ValueError("No valid JSON found in response")
-        
-        # Validate schema
-        self._validate_viral_response(result)
-        
-        return result
-    
-    def _validate_viral_response(self, result: Dict):
-        """Validate response against expected schema"""
+        except json.JSONDecodeError as e:
+            self.logger.error(f"JSON parse failed: {e}")
+            self.logger.debug(f"Response: {response_text[:500]}...")
+            raise
         
         if "top_clips" not in result:
             raise ValueError("Missing 'top_clips' in response")
         
         clips = result["top_clips"]
         
-        if not isinstance(clips, list):
-            raise ValueError("'top_clips' must be a list")
+        if not isinstance(clips, list) or len(clips) < 3:
+            raise ValueError(f"Need at least 3 clips, got {len(clips)}")
         
-        if len(clips) != 5:
-            self.logger.warning(f"⚠️ Expected 5 clips, got {len(clips)}")
+        # Validate and fix clips
+        valid_clips = []
+        seen_hooks = set()
         
-        required_fields = [
-            "rank", "start_time", "end_time", "duration",
-            "hook_text", "reason", "viral_score", "category",
-            "suggested_caption", "loop_hint"
-        ]
+        for i, clip in enumerate(clips[:5]):  # Max 5
+            try:
+                # Required fields
+                required = ["rank", "start_time", "end_time", "hook_text", 
+                           "reason", "viral_score", "category", "suggested_caption"]
+                
+                for field in required:
+                    if field not in clip:
+                        self.logger.warning(f"Clip {i+1} missing '{field}', skipping")
+                        continue
+                
+                # Validate timestamps
+                start = float(clip["start_time"])
+                end = float(clip["end_time"])
+                
+                if start < 0 or end > video_duration:
+                    self.logger.warning(f"Clip {i+1} out of bounds, skipping")
+                    continue
+                
+                if end <= start:
+                    self.logger.warning(f"Clip {i+1} invalid duration, skipping")
+                    continue
+                
+                duration = end - start
+                
+                # Validate duration (30-60 seconds)
+                if duration < 20 or duration > 70:
+                    self.logger.warning(f"Clip {i+1} duration {duration:.1f}s out of range 20-70s")
+                    # Try to fix by extending/trimming
+                    if duration < 20:
+                        end = min(start + target_duration, video_duration)
+                    elif duration > 70:
+                        end = start + 60
+                    duration = end - start
+                    clip["end_time"] = end
+                    clip["duration"] = duration
+                
+                # Check for duplicate hooks
+                hook_key = clip["hook_text"].lower()[:50]
+                if hook_key in seen_hooks:
+                    self.logger.warning(f"Clip {i+1} has duplicate hook, skipping")
+                    continue
+                seen_hooks.add(hook_key)
+                
+                # Validate score
+                score = float(clip.get("viral_score", 70))
+                clip["viral_score"] = max(50, min(100, score))
+                
+                # Ensure duration field
+                clip["duration"] = duration
+                
+                # Add content_summary if missing
+                if "content_summary" not in clip:
+                    clip["content_summary"] = "Valuable podcast discussion"
+                
+                valid_clips.append(clip)
+                
+            except Exception as e:
+                self.logger.warning(f"Clip {i+1} validation error: {e}")
+                continue
         
-        for i, clip in enumerate(clips):
-            for field in required_fields:
-                if field not in clip:
-                    raise ValueError(f"Clip {i+1} missing required field: {field}")
-            
-            # Validate types and ranges
-            if not isinstance(clip["rank"], int) or not (1 <= clip["rank"] <= 5):
-                raise ValueError(f"Invalid rank in clip {i+1}: {clip['rank']}")
-            
-            if not isinstance(clip["viral_score"], (int, float)) or not (0 <= clip["viral_score"] <= 100):
-                raise ValueError(f"Invalid viral_score in clip {i+1}: {clip['viral_score']}")
-            
-            if not isinstance(clip["start_time"], (int, float)) or clip["start_time"] < 0:
-                raise ValueError(f"Invalid start_time in clip {i+1}: {clip['start_time']}")
-            
-            if not isinstance(clip["end_time"], (int, float)) or clip["end_time"] <= clip["start_time"]:
-                raise ValueError(f"Invalid end_time in clip {i+1}: {clip['end_time']}")
-            
-            # Validate category
-            valid_categories = ["hook", "emotional", "value", "controversial", "storytelling"]
-            if clip["category"] not in valid_categories:
-                self.logger.warning(f"⚠️ Unknown category in clip {i+1}: {clip['category']}")
+        if len(valid_clips) < 3:
+            raise ValueError(f"Only {len(valid_clips)} valid clips after validation")
         
-        # Check for overlaps
-        self._check_clip_overlaps(clips)
+        # Check overlaps and fix
+        self._fix_overlapping_clips(valid_clips)
         
-        self.logger.info("✅ Response validation passed")
+        # Sort by score
+        valid_clips.sort(key=lambda x: x["viral_score"], reverse=True)
+        
+        # Re-rank
+        for i, clip in enumerate(valid_clips):
+            clip["rank"] = i + 1
+        
+        result["top_clips"] = valid_clips[:5]
+        
+        self.logger.info(f"✅ Validated {len(result['top_clips'])} clips")
+        
+        return result
     
-    def _check_clip_overlaps(self, clips: List[Dict]):
-        """Check if clips have overlapping timestamps"""
+    def _fix_overlapping_clips(self, clips: List[Dict]):
+        """Fix overlapping timestamps"""
         sorted_clips = sorted(clips, key=lambda x: x["start_time"])
         
         for i in range(len(sorted_clips) - 1):
@@ -282,54 +399,90 @@ Now analyze and return ONLY the JSON:"""
             next_clip = sorted_clips[i + 1]
             
             if current["end_time"] > next_clip["start_time"]:
-                self.logger.warning(
-                    f"⚠️ Overlap detected: Clip ending at {current['end_time']}s "
-                    f"overlaps with clip starting at {next_clip['start_time']}s"
-                )
+                # Fix: trim current clip
+                overlap = current["end_time"] - next_clip["start_time"]
+                self.logger.warning(f"Overlap {overlap:.1f}s detected, fixing...")
+                
+                current["end_time"] = next_clip["start_time"] - 1
+                current["duration"] = current["end_time"] - current["start_time"]
     
-    def _fallback_analysis(self, transcript: List[Dict], video_duration: float) -> Dict:
-        """
-        Fallback analysis when Gemini fails
-        Uses simple heuristics to select segments
-        """
-        self.logger.warning("⚠️ Using fallback viral analysis (Gemini unavailable)")
+    def _fallback_analysis(
+        self, 
+        transcript: List[Dict], 
+        video_duration: float,
+        clip_duration: int
+    ) -> Dict:
+        """Fallback: find content-rich segments and extend to full clips"""
+        self.logger.warning("⚠️ Using fallback analysis")
         
-        # Simple heuristic: divide video into 5 equal parts
-        segment_duration = min(45, video_duration / 6)  # Max 45s per clip
-        clips = []
+        # Score segments by content richness
+        scored_segments = []
         
-        for i in range(5):
-            start = i * (video_duration / 5)
-            end = start + segment_duration
+        for seg in transcript:
+            text = seg.get('text', '').strip()
+            words = text.split()
             
-            if end > video_duration:
-                end = video_duration
+            if len(words) < 5:
+                continue
+            
+            # Score based on keywords and length
+            score = len(words) * 2
+            
+            keywords = ['jadi', 'sebenarnya', 'rahasia', 'penting', 'intinya',
+                       'tips', 'cara', 'harus', 'jangan', 'kesalahan', 'terbaik']
+            
+            for kw in keywords:
+                if kw in text.lower():
+                    score += 15
+            
+            scored_segments.append({
+                'start': seg['start'],
+                'text': text,
+                'score': score
+            })
+        
+        # Sort and take top 5
+        scored_segments.sort(key=lambda x: x['score'], reverse=True)
+        
+        clips = []
+        used_ranges = []
+        
+        for i, seg in enumerate(scored_segments):
+            if len(clips) >= 5:
+                break
+            
+            start = seg['start']
+            end = min(start + clip_duration, video_duration)
+            
+            # Check overlap
+            overlap = any(
+                not (end <= used[0] or start >= used[1])
+                for used in used_ranges
+            )
+            
+            if overlap:
+                continue
             
             clips.append({
                 "rank": i + 1,
-                "start_time": float(start),
-                "end_time": float(end),
-                "duration": float(end - start),
-                "hook_text": "Auto-generated segment",
-                "reason": "Selected by fallback analyzer",
-                "viral_score": 50.0,
+                "start_time": start,
+                "end_time": end,
+                "duration": end - start,
+                "hook_text": seg['text'][:100],
+                "content_summary": f"Clip segment with {len(seg['text'].split())} words of content",
+                "reason": f"Selected by fallback analyzer (score: {seg['score']})",
+                "viral_score": 70.0 - (i * 3),
                 "category": "value",
-                "suggested_caption": "Check this out! 🔥",
+                "suggested_caption": f"Insights dari podcast ini 💡 #{i+1}",
                 "loop_hint": "N/A"
             })
+            
+            used_ranges.append((start, end))
         
         return {"top_clips": clips}
     
     def format_for_clipper(self, gemini_result: Dict) -> List[Dict]:
-        """
-        Convert Gemini output to clipper-compatible format
-        
-        Args:
-            gemini_result: Output from analyze_viral_segments()
-        
-        Returns:
-            List of clips in clipper format
-        """
+        """Convert Gemini output to clipper format"""
         clips = []
         
         for clip_data in gemini_result["top_clips"]:
@@ -338,11 +491,13 @@ Now analyze and return ONLY the JSON:"""
                 'start': clip_data['start_time'],
                 'end': clip_data['end_time'],
                 'duration': int(clip_data['duration']),
-                'engagement_score': clip_data['viral_score'] / 100,  # Normalize to 0-1
+                'engagement_score': clip_data['viral_score'] / 100,
                 'viral_category': clip_data['category'],
                 'hook_text': clip_data['hook_text'],
+                'content_summary': clip_data.get('content_summary', ''),
                 'suggested_caption': clip_data['suggested_caption'],
-                'reason': clip_data['reason']
+                'reason': clip_data['reason'],
+                'loop_hint': clip_data.get('loop_hint', 'N/A')
             })
         
         return clips

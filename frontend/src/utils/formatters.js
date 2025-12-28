@@ -19,3 +19,15 @@ export const getRangeColor = (range, options) => {
   const option = options.find(opt => opt.value === range);
   return option?.color || 'gray';
 };
+
+export const formatFileSize = (bytes) => {
+  if (!bytes || bytes === 0) return '0 KB';
+  
+  if (bytes < 1024 * 1024) {
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  } else if (bytes < 1024 * 1024 * 1024) {
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  } else {
+    return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+  }
+};

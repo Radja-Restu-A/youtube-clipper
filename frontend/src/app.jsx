@@ -20,6 +20,8 @@ export default function App() {
   const { history, loadHistory } = useHistory();
   
   const progressHook = useProgress();
+
+  const { videos, stats, loading, deleteVideo } = useHistory();
   
   const processor = useYouTubeProcessor(
     progressHook,
@@ -44,14 +46,17 @@ export default function App() {
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-900 via-slate-900 to-gray-900 text-gray-100">
       <Header onHistoryClick={() => setShowHistory(!showHistory)} />
+        
 
       <div className="max-w-7xl mx-auto px-8 py-8">
         <ErrorAlert error={processor.error} />
 
-        <HistorySidebar
-          history={history}
-          rangeOptions={RANGE_OPTIONS}
-          show={showHistory}
+        <HistorySidebar 
+          videos={videos}
+          stats={stats}
+          loading={loading}
+          isVisible={showHistory}
+          onDeleteVideo={deleteVideo}
         />
 
         <URLInputSection

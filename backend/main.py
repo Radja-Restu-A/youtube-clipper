@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 import json
 import uuid
 from typing import List
@@ -27,10 +28,11 @@ from services.youtube_service import YouTubeService
 from services.audio_service import AudioAnalysisService
 from services.transcription_service import TranscriptionService
 from services.clip_service import ClipDetectionService
-from services.context_analysis_service import ContextAnalysisService  # 🆕 NEW
+from services.context_analysis_service import ContextAnalysisService
 from services.subtitle_service import SubtitleService
 from services.video_service import VideoProcessingService
 from services.gemini_viral_analyzer import GeminiViralAnalyzer
+from services.history_service import OutputHistoryService
 
 # Import utils
 from utils.time_utils import parse_range_percent
@@ -38,6 +40,7 @@ from utils.file_utils import cleanup_temp_files
 
 # Initialize FastAPI app
 app = FastAPI(title="Whisper Subtitle API with Auto Clip")
+app.mount("/output", StaticFiles(directory=str(OUTPUT_DIR)), name="output")
 
 # CORS configuration
 app.add_middleware(
@@ -63,6 +66,7 @@ clip_service = ClipDetectionService()
 context_service = ContextAnalysisService()  # 🆕 NEW
 subtitle_service = SubtitleService()
 video_service = VideoProcessingService()
+output_history_service = OutputHistoryService(OUTPUT_DIR)
 
 # Initialize services gemini
 gemini_analyzer = None
@@ -147,10 +151,30 @@ class VideoProcessor:
                     youtube_url=youtube_url,
                     video_duration=actual_duration,
                     transcript=transcript_segments,
-                    language="id",  # or detect from video_info
+                    language="id",
                     max_retries=GEMINI_MAX_RETRIES,
                     timeout=GEMINI_TIMEOUT
                 )
+
+                # 🆕 DEBUG: Log Gemini result
+                logger.info("=" * 80)
+                logger.info("GEMINI VIRAL ANALYSIS RESULT:")
+                logger.info("=" * 80)
+                for i, clip in enumerate(viral_result['top_clips']):
+                    logger.info(f"\nClip {i+1}:")
+                    logger.info(f"  Rank: {clip['rank']}")
+                    logger.info(f"  Timestamps: {clip['start_time']:.1f}s - {clip['end_time']:.1f}s")
+                    logger.info(f"  Duration: {clip['duration']:.1f}s")
+                    logger.info(f"  Viral Score: {clip['viral_score']}")
+                    logger.info(f"  Category: {clip['category']}")
+                    logger.info(f"  Hook: {clip['hook_text'][:80]}...")
+                    logger.info(f"  Caption: {clip['suggested_caption']}")
+                    logger.info(f"  Reason: {clip['reason'][:100]}...")
+                    logger.info("=" * 80)
+                
+                # Convert to clipper format
+                gemini_clips = self.gemini.format_for_clipper(viral_result)
+                top_clips = self.clip.find_top_clips_by_viral(gemini_clips)
                 
                 self.progress.update(video_id, "selecting_clips", 50, 
                                    f"Selecting top {TOP_CLIPS_COUNT} viral segments...")
@@ -491,6 +515,72 @@ async def get_history():
         return {"history": history}
     except Exception as e:
         logger.error(f"Error loading history: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+    
+@app.get("/history/videos")
+async def get_all_videos():
+    """
+    Get all videos from output folder
+    Reads all metadata files and returns complete video list
+    """
+    try:
+        videos = output_history_service.get_all_videos()
+        
+        return {
+            "total": len(videos),
+            "videos": videos
+        }
+        
+    except Exception as e:
+        logger.error(f"Error loading videos: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/history/videos/{video_id}")
+async def get_video_detail(video_id: str):
+    """Get detailed information for specific video"""
+    try:
+        video = output_history_service.get_video_by_id(video_id)
+        
+        if not video:
+            raise HTTPException(status_code=404, detail="Video not found")
+        
+        return video
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error loading video {video_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/history/videos/{video_id}")
+async def delete_video(video_id: str):
+    """Delete video and all its clips"""
+    try:
+        success = output_history_service.delete_video(video_id)
+        
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to delete video")
+        
+        return {
+            "status": "success",
+            "message": f"Video {video_id} deleted successfully"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error deleting video {video_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/history/stats")
+async def get_storage_stats():
+    """Get storage statistics"""
+    try:
+        stats = output_history_service.get_storage_stats()
+        return stats
+    except Exception as e:
+        logger.error(f"Error getting stats: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

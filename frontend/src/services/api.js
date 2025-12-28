@@ -38,5 +38,62 @@ export const api = {
 
   getDownloadUrl(videoId, clipNumber) {
     return `${API_BASE}/download/${videoId}/${clipNumber}`;
-  }
+  },
+
+  async getAllVideos() {
+    try {
+      const response = await fetch(`${API_BASE}/history/videos`);
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      return response.json(); // Returns { total, videos }
+    } catch (error) {
+      console.error('Error fetching videos:', error);
+      throw error;
+    }
+  },
+
+  // ✅ NEW: Get video detail
+  async getVideoDetail(videoId) {
+    try {
+      const response = await fetch(`${API_BASE}/history/videos/${videoId}`);
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      return response.json();
+    } catch (error) {
+      console.error('Error fetching video detail:', error);
+      throw error;
+    }
+  },
+
+  // ✅ NEW: Delete video
+  async deleteVideo(videoId) {
+    try {
+      const response = await fetch(`${API_BASE}/history/videos/${videoId}`, {
+        method: 'DELETE'
+      });
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      return response.json();
+    } catch (error) {
+      console.error('Error deleting video:', error);
+      throw error;
+    }
+  },
+
+  // ✅ NEW: Get storage stats
+  async getStorageStats() {
+    try {
+      const response = await fetch(`${API_BASE}/history/stats`);
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      return response.json();
+    } catch (error) {
+      console.error('Error fetching stats:', error);
+      throw error;
+    }
+  },
 };
