@@ -7,6 +7,8 @@ class YouTubeRequest(BaseModel):
     range_percent: Optional[str] = "0-100"
     generate_mode: Optional[str] = "audio"  # "audio" | "context" | "viral"  # 🆕 NEW
 
+# models/schemas.py
+
 class ClipInfo(BaseModel):
     clip_id: str
     clip_number: int
@@ -17,12 +19,14 @@ class ClipInfo(BaseModel):
     output_file: str
     word_count: int
     context_reason: Optional[str] = None
-    # 🆕 NEW: Viral-specific fields
+    # Viral-specific fields
     viral_category: Optional[str] = None
     hook_text: Optional[str] = None
+    content_summary: Optional[str] = None      # 🆕 NEW
+    theme_relevance: Optional[str] = None      # 🆕 NEW
     suggested_caption: Optional[str] = None
     loop_hint: Optional[str] = None
-
+    
 class VideoMetadata(BaseModel):
     video_id: str
     youtube_url: str

@@ -128,15 +128,17 @@ class VideoProcessor:
             result = self.transcription.transcribe(audio_path)
             
             # 🆕 Step 5: MODE SELECTION - Audio / Context / Viral
+            # In VideoProcessor.process() method, viral mode section:
+
             if generate_mode == "viral":
-                # 🔥 VIRAL MODE: Gemini-powered viral analysis
+                # 🔥 VIRAL MODE: Context-aware Gemini analysis
                 if not self.gemini:
                     raise Exception("Gemini Viral Analyzer not available. Check GEMINI_API_KEY.")
                 
                 self.progress.update(video_id, "analyzing", 40, 
-                                   "🔥 Analyzing viral potential with Gemini AI...")
+                                "🔥 Analyzing with Gemini AI (context + viral potential)...")
                 
-                # Prepare transcript for Gemini
+                # Prepare transcript
                 transcript_segments = [
                     {
                         'start': seg['start'],
@@ -146,43 +148,29 @@ class VideoProcessor:
                     for seg in result.get('segments', [])
                 ]
                 
-                # Call Gemini analyzer
+                # 🆕 Call Gemini with video context
                 viral_result = self.gemini.analyze_viral_segments(
                     youtube_url=youtube_url,
+                    video_title=video_info.get('title', 'Unknown'),           # 🆕 NEW
+                    video_description=video_info.get('description', ''),      # 🆕 NEW
                     video_duration=actual_duration,
                     transcript=transcript_segments,
                     language="id",
+                    clip_duration=clip_duration,
                     max_retries=GEMINI_MAX_RETRIES,
                     timeout=GEMINI_TIMEOUT
                 )
-
-                # 🆕 DEBUG: Log Gemini result
-                logger.info("=" * 80)
-                logger.info("GEMINI VIRAL ANALYSIS RESULT:")
-                logger.info("=" * 80)
-                for i, clip in enumerate(viral_result['top_clips']):
-                    logger.info(f"\nClip {i+1}:")
-                    logger.info(f"  Rank: {clip['rank']}")
-                    logger.info(f"  Timestamps: {clip['start_time']:.1f}s - {clip['end_time']:.1f}s")
-                    logger.info(f"  Duration: {clip['duration']:.1f}s")
-                    logger.info(f"  Viral Score: {clip['viral_score']}")
-                    logger.info(f"  Category: {clip['category']}")
-                    logger.info(f"  Hook: {clip['hook_text'][:80]}...")
-                    logger.info(f"  Caption: {clip['suggested_caption']}")
-                    logger.info(f"  Reason: {clip['reason'][:100]}...")
-                    logger.info("=" * 80)
                 
-                # Convert to clipper format
-                gemini_clips = self.gemini.format_for_clipper(viral_result)
-                top_clips = self.clip.find_top_clips_by_viral(gemini_clips)
+                # Log theme analysis
+                if 'video_theme_analysis' in viral_result:
+                    logger.info(f"📊 Video Theme: {viral_result['video_theme_analysis']}")
                 
                 self.progress.update(video_id, "selecting_clips", 50, 
-                                   f"Selecting top {TOP_CLIPS_COUNT} viral segments...")
+                                f"Selecting top {TOP_CLIPS_COUNT} theme-relevant clips...")
                 
                 # Convert to clipper format
                 gemini_clips = self.gemini.format_for_clipper(viral_result)
-                top_clips = self.clip.find_top_clips_by_viral(gemini_clips)
-                
+                top_clips = self.clip.find_top_clips_by_viral(gemini_clips)    
             elif generate_mode == "context":
                 # CONTEXT MODE: Semantic analysis
                 self.progress.update(video_id, "analyzing", 40, 
