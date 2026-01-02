@@ -34,11 +34,12 @@ class GeminiViralAnalyzer:
         transcript: List[Dict],
         language: str = "id",
         clip_duration: int = 45,
+        total_clips: int = 5,  # 🆕 Dynamic clip count
         max_retries: int = 3,
         timeout: int = 45
     ) -> Dict:
         """
-        Analyze video and find top 5 viral clips that match video theme
+        Analyze video and find top N viral clips that match video theme
         
         Args:
             youtube_url: YouTube URL
@@ -48,13 +49,14 @@ class GeminiViralAnalyzer:
             transcript: Full transcript
             language: Language code
             clip_duration: Target clip length
+            total_clips: Number of clips to generate (1-20)
             max_retries: Retry attempts
             timeout: Request timeout
         
         Returns:
             Dict with top_clips array
         """
-        self.logger.info(f"🔍 Analyzing viral segments for: {video_title}")
+        self.logger.info(f"🔍 Analyzing {total_clips} viral segments for: {video_title}")
         self.logger.info(f"   Duration: {video_duration}s | Segments: {len(transcript)} | Target: {clip_duration}s")
         
         if not transcript or len(transcript) == 0:
@@ -68,7 +70,8 @@ class GeminiViralAnalyzer:
             video_duration=video_duration,
             transcript=transcript,
             language=language,
-            clip_duration=clip_duration
+            clip_duration=clip_duration,
+            total_clips=total_clips  # 🆕 Pass to prompt
         )
         
         # Call Gemini with retry
@@ -76,32 +79,37 @@ class GeminiViralAnalyzer:
             try:
                 self.logger.info(f"📡 Calling Gemini API (attempt {attempt}/{max_retries})...")
                 
+                # 🆕 Adjust timeout and tokens based on clip count
+                adjusted_timeout = timeout + (total_clips * 2)
+                max_tokens = 4096 + (total_clips * 200)
+                
                 response = self.model.generate_content(
                     prompt,
                     generation_config=genai.types.GenerationConfig(
                         temperature=0.85,
                         top_p=0.95,
                         top_k=40,
-                        max_output_tokens=4096,
+                        max_output_tokens=max_tokens,
                     ),
-                    request_options={"timeout": timeout}
+                    request_options={"timeout": adjusted_timeout}
                 )
                 
+                # 🆕 Pass expected clip count to validation
                 result = self._parse_and_validate_response(
-                    response, transcript, video_duration, clip_duration
+                    response, transcript, video_duration, clip_duration, total_clips
                 )
                 
-                self.logger.info(f"✅ Analysis complete! {len(result['top_clips'])} theme-relevant clips")
+                actual_count = len(result['top_clips'])
+                self.logger.info(f"✅ Analysis complete! {actual_count}/{total_clips} clips generated")
                 
                 # Log clips with relevance scores
                 for i, clip in enumerate(result['top_clips']):
                     self.logger.info(
-                        f"  🔥 Clip {i+1}: {clip['start_time']:.1f}s-{clip['end_time']:.1f}s | "
+                        f"  🔥 Clip {i+1}/{actual_count}: {clip['start_time']:.1f}s-{clip['end_time']:.1f}s | "
                         f"Score: {clip['viral_score']:.1f} | "
-                        f"Relevance: {clip.get('theme_relevance', 'N/A')} | "
+                        f"Relevance: {clip.get('theme_relevance', 'N/A')[:30]}... | "
                         f"{clip['category']}"
                     )
-                    self.logger.info(f"     Hook: \"{clip['hook_text'][:60]}...\"")
                 
                 return result
                 
@@ -109,10 +117,10 @@ class GeminiViralAnalyzer:
                 self.logger.error(f"⚠️ Attempt {attempt} failed: {e}")
                 if attempt == max_retries:
                     self.logger.warning("❌ All retries failed, using fallback")
-                    return self._fallback_analysis(transcript, video_duration, clip_duration)
+                    return self._fallback_analysis(transcript, video_duration, clip_duration, total_clips)
                 time.sleep(2 ** attempt)
         
-        return self._fallback_analysis(transcript, video_duration, clip_duration)
+        return self._fallback_analysis(transcript, video_duration, clip_duration, total_clips)
     
     def _build_context_aware_prompt(
         self,
@@ -122,7 +130,8 @@ class GeminiViralAnalyzer:
         video_duration: float,
         transcript: List[Dict],
         language: str,
-        clip_duration: int
+        clip_duration: int,
+        total_clips: int = 5  # 🆕 Dynamic
     ) -> str:
         """Build context-aware prompt that considers video theme"""
         
@@ -153,6 +162,7 @@ VIDEO CONTEXT:
 ⏱️  Duration: {video_duration:.1f} seconds
 🗣️  Language: {lang_context}
 🎯 Target Clip Length: {clip_duration} seconds
+🎬 Clips Requested: {total_clips}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 FULL TRANSCRIPT:
@@ -162,7 +172,9 @@ FULL TRANSCRIPT:
 
 🎯 YOUR MISSION:
 
-Analyze this video holistically and find the TOP 5 viral-worthy clips that:
+⚠️ CRITICAL REQUIREMENT: You MUST return EXACTLY {total_clips} clips in the JSON response!
+
+Analyze this video holistically and find the TOP {total_clips} viral-worthy clips that:
 
 1. ✅ **MATCH THE VIDEO THEME** - Clips must be DIRECTLY RELEVANT to what the title/description promise
 2. ✅ **HAVE POWERFUL HOOKS** - First 3 seconds grab attention immediately
@@ -236,19 +248,6 @@ Each component scored 0-100, then apply weights.
    55:  Some viral elements
    40:  Low viral potential
 
-EXAMPLE SCORING:
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-Clip: "Jadi kesalahan terbesar di [THEME] adalah..."
-- Theme Relevance: 90 (directly addresses title topic)
-- Hook Quality: 85 (strong curiosity hook)
-- Content Value: 75 (delivers specific examples)
-- Virality: 70 (likely to get comments)
-
-viral_score = (90×0.30) + (85×0.35) + (75×0.20) + (70×0.15)
-            = 27 + 29.75 + 15 + 10.5
-            = 82.25 → Score: 82 ✅ GREAT CLIP!
-
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 WHAT TO AVOID:
@@ -259,14 +258,8 @@ WHAT TO AVOID:
 ❌ Segments that don't deliver on title's promise
 
 DIVERSITY WITHIN THEME:
-- All 5 clips should relate to the SAME main theme
+- All {total_clips} clips should relate to the SAME main theme
 - But cover DIFFERENT aspects/angles of that theme
-- Example: If theme is "Business Tips"
-  → Clip 1: Hook about mistake #1
-  → Clip 2: Hook about success strategy
-  → Clip 3: Hook about mindset shift
-  → Clip 4: Hook about resource management
-  → Clip 5: Hook about scaling tips
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -274,132 +267,51 @@ TECHNICAL REQUIREMENTS:
 ✅ Each clip: 30-60 seconds (hook 3s + content 27-57s)
 ✅ Use EXACT timestamps from transcript
 ✅ NO overlapping clips
-✅ 5 DIFFERENT segments covering different aspects of theme
+✅ EXACTLY {total_clips} DIFFERENT segments covering different aspects of theme
 
 SCORING (0-100) - BE GENEROUS BUT FAIR:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 ⭐ 85-100: EXCEPTIONAL
-- Perfect hook that stops scrolling instantly
-- Delivers massive value on theme
-- Extremely shareable/comment-worthy
-- Example: Reveals shocking secret about main topic
-
 ⭐ 75-84: VERY GOOD (Most viral clips fall here!)
-- Strong hook related to theme
-- Good content delivery
-- Clear viral potential
-- This is the TARGET range for quality clips
-
 ⭐ 65-74: GOOD (Still usable!)
-- Decent hook about theme
-- Valuable content
-- Some viral elements
-- Acceptable for selection
-
 ⭐ 55-64: ACCEPTABLE
-- Theme-relevant with okay hook
-- Basic value delivery
-- Minimal viral potential
 
-⚠️ Below 55: AVOID
-- Weak theme connection
-- Poor hook
-- Low engagement potential
-
-IMPORTANT CALIBRATION NOTES:
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ✅ DO score 75-85 for SOLID, USABLE clips (this is normal!)
 ✅ DO be optimistic - if it's theme-relevant with decent hook, go 70+
-✅ DON'T reserve 80+ only for "perfect" content
-✅ DON'T be overly critical - real podcasts are conversational
 ✅ REMEMBER: A 75-score clip can still go viral on TikTok!
-
-Think like a TikTok creator, not a film critic. 
-If YOU would post this clip, score it 70+.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 OUTPUT FORMAT (STRICT JSON ONLY):
 
 {{
-  "video_theme_analysis": "<1-2 sentence summary of what this video is primarily about>",
+  "video_theme_analysis": "<1-2 sentence summary>",
   "top_clips": [
+    // ⚠️ MUST CONTAIN EXACTLY {total_clips} OBJECTS!
     {{
       "rank": 1,
-      "start_time": <timestamp where hook starts>,
-      "end_time": <start_time + 30 to 60 seconds>,
-      "duration": <end_time - start_time>,
-      "hook_text": "<exact first 3 seconds text that hooks viewers INTO THE THEME>",
-      "content_summary": "<what the full 30-60s clip covers related to theme>",
-      "theme_relevance": "<how this clip addresses the video's main topic>",
-      "reason": "<why this hook+content combo is viral AND theme-relevant>",
+      "start_time": <timestamp>,
+      "end_time": <timestamp>,
+      "duration": <seconds>,
+      "hook_text": "<exact first 3 seconds text>",
+      "content_summary": "<what the full 30-60s covers>",
+      "theme_relevance": "<how this addresses main topic>",
+      "reason": "<why viral AND theme-relevant>",
       "viral_score": <70-100>,
       "category": "hook|emotional|value|controversial|storytelling",
-      "suggested_caption": "<catchy caption that references the THEME>",
-      "loop_hint": "<how to loop, or 'N/A'>"
-    }}
+      "suggested_caption": "<catchy caption>",
+      "loop_hint": "<how to loop or N/A>"
+    }},
+    // ... continue until rank {total_clips}
   ]
 }}
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-EXAMPLE OUTPUT STRUCTURE:
-
-{{
-  "video_theme_analysis": "This video discusses common mistakes entrepreneurs make when starting online businesses, with focus on mindset and resource management.",
-  "top_clips": [
-    {{
-      "rank": 1,
-      "start_time": 145.2,
-      "end_time": 190.5,
-      "duration": 45.3,
-      "hook_text": "Jadi kesalahan terbesar di bisnis online yang bikin 90% orang gagal adalah...",
-      "content_summary": "Explains the biggest mistake (not validating market first), gives 3 real examples of failed businesses, and shows the correct approach with actionable steps",
-      "theme_relevance": "Directly addresses main topic of business mistakes mentioned in title. Delivers specific mistake + solution that viewers came to learn",
-      "reason": "Perfect hook about THE MISTAKE (aligns with video promise), then delivers valuable lesson with examples. Viewers searching for business mistakes will find exactly what they need. Will spark comments sharing their own mistakes",
-      "viral_score": 95.0,
-      "category": "value",
-      "suggested_caption": "Kesalahan #1 yang bikin bisnis online gagal 😱 90% orang gak sadar lagi ngulang ini! #BisnisOnline #TipsUsaha",
-      "loop_hint": "Ends with question about mistake #2, loops to wanting more"
-    }}
-  ]
-}}
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-NOW ANALYZE:
-
-🎯 CRITICAL INSTRUCTION FOR SCORING:
-You are analyzing REAL podcast content, not Hollywood movies.
-Most GOOD, VIRAL-WORTHY clips will score 75-85.
-Don't be overly critical or conservative.
-
-If a clip has:
-✅ Clear connection to video theme → Give at least 70+ base
-✅ Decent hook that creates curiosity → Add 5-10 points
-✅ Delivers valuable content → Add 5-10 points
-✅ Has viral elements → Add 5-10 points
-
-A clip with all 4 should easily be 80-90, not 60-70!
-
-STEP-BY-STEP PROCESS:
-
-1. Identify video theme from title + description
-2. Find 5 segments that BEST match the theme
-3. For EACH segment, calculate detailed scores:
-   
-   Component Scores (each 0-100):
-   - Theme Relevance: How well does it match title promise?
-   - Hook Quality: How strong is the opening 3 seconds?
-   - Content Value: How valuable is the full 30-60s?
-   - Virality: How likely to get engagement?
-   
-4. Calculate weighted viral_score using formula above
-5. Round to 1 decimal place
-6. Ensure at least 2-3 clips score 75+
-
-Remember: Be OPTIMISTIC but honest. Real creators would post these clips!
+⚠️ FINAL REMINDERS:
+1. Your response MUST include EXACTLY {total_clips} clips in top_clips array
+2. If you cannot find {total_clips} perfect clips, provide {total_clips} best available
+3. Lower-quality clips (score 65-75) are acceptable to meet the {total_clips} requirement
+4. Count your clips before submitting - MUST BE EXACTLY {total_clips}!
 
 Return ONLY the JSON (no markdown, no extra text):"""
         
@@ -410,7 +322,8 @@ Return ONLY the JSON (no markdown, no extra text):"""
         response, 
         transcript: List[Dict], 
         video_duration: float,
-        target_duration: int
+        target_duration: int,
+        expected_clips: int = 5  # 🆕 Expected count
     ) -> Dict:
         """Parse and validate Gemini response"""
         
@@ -432,25 +345,36 @@ Return ONLY the JSON (no markdown, no extra text):"""
             result = json.loads(response_text)
         except json.JSONDecodeError as e:
             self.logger.error(f"JSON parse failed: {e}")
+            self.logger.debug(f"Response: {response_text[:500]}...")
             raise
         
         if "top_clips" not in result:
             raise ValueError("Missing 'top_clips' in response")
         
-        # Log theme analysis if present
+        # Log theme analysis
         if "video_theme_analysis" in result:
             self.logger.info(f"📊 Theme Analysis: {result['video_theme_analysis']}")
         
         clips = result["top_clips"]
         
-        if not isinstance(clips, list) or len(clips) < 3:
-            raise ValueError(f"Need at least 3 clips, got {len(clips)}")
+        if not isinstance(clips, list):
+            raise ValueError("'top_clips' must be a list")
+        
+        # 🆕 Check clip count
+        if len(clips) < expected_clips:
+            self.logger.warning(
+                f"⚠️ Gemini returned only {len(clips)} clips, expected {expected_clips}"
+            )
+        
+        # 🆕 Process up to expected count (not hardcoded 5)
+        clips_to_process = clips[:expected_clips]
+        self.logger.info(f"Processing {len(clips_to_process)} clips from Gemini response")
         
         # Validate clips
         valid_clips = []
         seen_hooks = set()
         
-        for i, clip in enumerate(clips[:5]):
+        for i, clip in enumerate(clips_to_process):
             try:
                 # Required fields
                 required = ["rank", "start_time", "end_time", "hook_text", 
@@ -498,11 +422,10 @@ Return ONLY the JSON (no markdown, no extra text):"""
                 score = float(clip.get("viral_score", 70))
                 clip["viral_score"] = max(50, min(100, score))
                 
-                # Ensure theme_relevance field
+                # Ensure required fields
                 if "theme_relevance" not in clip:
                     clip["theme_relevance"] = "Related to video theme"
                 
-                # Ensure content_summary
                 if "content_summary" not in clip:
                     clip["content_summary"] = "Valuable content"
                 
@@ -512,8 +435,13 @@ Return ONLY the JSON (no markdown, no extra text):"""
                 self.logger.warning(f"Clip {i+1} validation error: {e}")
                 continue
         
-        if len(valid_clips) < 3:
-            raise ValueError(f"Only {len(valid_clips)} valid clips")
+        # 🆕 Check if we got enough clips
+        min_required = max(3, int(expected_clips * 0.6))  # At least 60%
+        if len(valid_clips) < min_required:
+            raise ValueError(
+                f"Only {len(valid_clips)} valid clips, need at least {min_required} "
+                f"(60% of {expected_clips})"
+            )
         
         # Fix overlaps
         self._fix_overlapping_clips(valid_clips)
@@ -521,11 +449,16 @@ Return ONLY the JSON (no markdown, no extra text):"""
         # Sort by score
         valid_clips.sort(key=lambda x: x["viral_score"], reverse=True)
         
+        # 🆕 Take exactly what was requested
+        final_clips = valid_clips[:expected_clips]
+        
         # Re-rank
-        for i, clip in enumerate(valid_clips):
+        for i, clip in enumerate(final_clips):
             clip["rank"] = i + 1
         
-        result["top_clips"] = valid_clips[:5]
+        result["top_clips"] = final_clips
+        
+        self.logger.info(f"✅ Validated {len(final_clips)}/{expected_clips} clips")
         
         return result
     
@@ -547,10 +480,11 @@ Return ONLY the JSON (no markdown, no extra text):"""
         self, 
         transcript: List[Dict], 
         video_duration: float,
-        clip_duration: int
+        clip_duration: int,
+        total_clips: int = 5  # 🆕 Dynamic
     ) -> Dict:
-        """Fallback analysis"""
-        self.logger.warning("⚠️ Using fallback analysis")
+        """Fallback analysis with dynamic clip count"""
+        self.logger.warning(f"⚠️ Using fallback analysis for {total_clips} clips")
         
         scored_segments = []
         
@@ -581,8 +515,9 @@ Return ONLY the JSON (no markdown, no extra text):"""
         clips = []
         used_ranges = []
         
+        # 🆕 Generate requested number
         for i, seg in enumerate(scored_segments):
-            if len(clips) >= 5:
+            if len(clips) >= total_clips:
                 break
             
             start = seg['start']
@@ -605,13 +540,15 @@ Return ONLY the JSON (no markdown, no extra text):"""
                 "content_summary": f"Content segment ({len(seg['text'].split())} words)",
                 "theme_relevance": "Fallback selection",
                 "reason": f"Fallback analyzer (score: {seg['score']})",
-                "viral_score": 70.0 - (i * 3),
+                "viral_score": 70.0 - (i * 2),
                 "category": "value",
                 "suggested_caption": f"Insights #{i+1} 💡",
                 "loop_hint": "N/A"
             })
             
             used_ranges.append((start, end))
+        
+        self.logger.info(f"Fallback generated {len(clips)}/{total_clips} clips")
         
         return {
             "video_theme_analysis": "Fallback analysis - theme not analyzed",

@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, validator
 from typing import Optional, List, Dict
 
 class YouTubeRequest(BaseModel):
@@ -6,7 +6,16 @@ class YouTubeRequest(BaseModel):
     clip_duration: Optional[int] = 45
     range_percent: Optional[str] = "0-100"
     generate_mode: Optional[str] = "audio"  # "audio" | "context" | "viral"  # 🆕 NEW
-
+    total_clips: Optional[int] = 5  # 🆕 NEW: User-defined clip count
+    
+    @validator('total_clips')
+    def validate_total_clips(cls, v):
+        if v is not None:
+            if v < 1:
+                raise ValueError('total_clips must be at least 1')
+            if v > 20:
+                raise ValueError('total_clips cannot exceed 20')
+        return v or 5
 # models/schemas.py
 
 class ClipInfo(BaseModel):

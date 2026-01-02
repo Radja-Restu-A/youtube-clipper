@@ -88,30 +88,24 @@ class ClipDetectionService:
         return selected_clips
     
     @staticmethod
-    def find_top_clips_by_viral(gemini_clips: List[dict]) -> List[dict]:
-        """
-        🆕 NEW: Format Gemini viral clips for clipper pipeline (VIRAL MODE)
-        
-        Args:
-            gemini_clips: Output from GeminiViralAnalyzer.format_for_clipper()
-        
-        Returns:
-            List of clips in standard format
-        """
+    def find_top_clips_by_viral(gemini_clips: List[dict], 
+                                top_n: int = 5) -> List[dict]:  # 🆕 Made flexible
+        """Format Gemini viral clips (VIRAL MODE)"""
         from config import logger
         
         logger.info(f"[VIRAL MODE] Processing {len(gemini_clips)} Gemini-analyzed clips")
         
-        # Gemini clips are already pre-selected and formatted
-        # Just ensure chronological order
-        sorted_clips = sorted(gemini_clips, key=lambda x: x['start'])
+        # Take only top_n clips
+        selected_clips = gemini_clips[:top_n]
+        
+        # Sort chronologically
+        sorted_clips = sorted(selected_clips, key=lambda x: x['start'])
         
         for i, clip in enumerate(sorted_clips):
             logger.info(
                 f"  🔥 Clip {i+1}: {clip['start']:.1f}s-{clip['end']:.1f}s | "
                 f"Score: {clip['engagement_score']:.2f} | "
-                f"Category: {clip['viral_category']} | "
-                f"Hook: {clip['hook_text'][:50]}..."
+                f"Category: {clip['viral_category']}"
             )
         
         return sorted_clips

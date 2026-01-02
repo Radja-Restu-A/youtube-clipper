@@ -13,7 +13,8 @@ from config import (
     CLIP_DURATION, TOP_CLIPS_COUNT, AUDIO_DIR, CLIPS_DIR, 
     SUBTITLES_DIR, OUTPUT_DIR, HISTORY_DIR, logger,
     CONTEXT_CLIP_MIN_DURATION, CONTEXT_CLIP_MAX_DURATION, CONTEXT_DURATION_FLEX,
-    GEMINI_API_KEY, GEMINI_MODEL, GEMINI_TIMEOUT, GEMINI_MAX_RETRIES
+    GEMINI_API_KEY, GEMINI_MODEL, GEMINI_TIMEOUT, GEMINI_MAX_RETRIES,
+    MIN_CLIPS_COUNT, MAX_CLIPS_COUNT
 )
 
 # Import models
@@ -96,13 +97,19 @@ class VideoProcessor:
         self.history = history_repo
     
     def process(self, video_id: str, youtube_url: str, clip_duration: int, 
-                range_percent: str, generate_mode: str = "audio"):
+                range_percent: str, generate_mode: str = "audio",
+                total_clips: int = 5):
         """Main processing pipeline with mode selection"""
         try:
-            # Step 1: Validate video
+            
+            total_clips = max(MIN_CLIPS_COUNT, min(MAX_CLIPS_COUNT, total_clips))
+            logger.info(f"🎯 Generation Mode: {generate_mode.upper()} | Clips: {total_clips}")
+
+            
             self.progress.update(video_id, "validating", 5, "Validating YouTube video...")
             video_info = self.youtube.get_video_info(youtube_url)
             total_duration = video_info['duration']
+            
             
             if total_duration > MAX_DURATION_SECONDS:
                 raise Exception(f"Video too long: {total_duration}s (max: {MAX_DURATION_SECONDS}s)")
@@ -136,7 +143,7 @@ class VideoProcessor:
                     raise Exception("Gemini Viral Analyzer not available. Check GEMINI_API_KEY.")
                 
                 self.progress.update(video_id, "analyzing", 40, 
-                                "🔥 Analyzing with Gemini AI (context + viral potential)...")
+                    f"🔥 Analyzing with Gemini AI ({total_clips} clips)...")
                 
                 # Prepare transcript
                 transcript_segments = [
@@ -158,7 +165,8 @@ class VideoProcessor:
                     language="id",
                     clip_duration=clip_duration,
                     max_retries=GEMINI_MAX_RETRIES,
-                    timeout=GEMINI_TIMEOUT
+                    timeout=GEMINI_TIMEOUT,
+                    total_clips=total_clips
                 )
                 
                 # Log theme analysis
@@ -166,41 +174,41 @@ class VideoProcessor:
                     logger.info(f"📊 Video Theme: {viral_result['video_theme_analysis']}")
                 
                 self.progress.update(video_id, "selecting_clips", 50, 
-                                f"Selecting top {TOP_CLIPS_COUNT} theme-relevant clips...")
+                                f"Selecting top {total_clips} theme-relevant clips...")
                 
                 # Convert to clipper format
                 gemini_clips = self.gemini.format_for_clipper(viral_result)
-                top_clips = self.clip.find_top_clips_by_viral(gemini_clips)    
+                top_clips = self.clip.find_top_clips_by_viral(gemini_clips,total_clips)    
             elif generate_mode == "context":
-                # CONTEXT MODE: Semantic analysis
+            # CONTEXT MODE
                 self.progress.update(video_id, "analyzing", 40, 
-                                   "Analyzing conversation context...")
+                                f"Analyzing conversation context ({total_clips} clips)...")
                 
                 analyzed_segments = self.context.analyze_transcript_for_clips(
                     result, clip_duration, CONTEXT_DURATION_FLEX
                 )
                 
                 self.progress.update(video_id, "selecting_clips", 50, 
-                                   f"Selecting top {TOP_CLIPS_COUNT} clips by semantic value...")
+                                f"Selecting top {total_clips} clips...")
                 
                 top_clips = self.clip.find_top_clips_by_context(
-                    analyzed_segments, TOP_CLIPS_COUNT
+                    analyzed_segments, total_clips  # 🆕 Pass count
                 )
                 
             else:
                 # AUDIO MODE: Engagement-based (original)
                 self.progress.update(video_id, "analyzing", 40, 
-                                   "Analyzing audio for best clips...")
-                
+                               f"Analyzing audio ({total_clips} clips)...")
+            
                 engagement_windows = self.audio.analyze_engagement(audio_path)
                 
                 self.progress.update(video_id, "selecting_clips", 50, 
-                                   f"Selecting top {TOP_CLIPS_COUNT} clips...")
+                                f"Selecting top {total_clips} clips...")
                 
                 top_clips = self.clip.find_top_clips(
-                    engagement_windows, clip_duration, TOP_CLIPS_COUNT
+                    engagement_windows, clip_duration, total_clips  # 🆕 Pass count
                 )
-            
+                
             # Rest of processing remains the same...
             clips_output = self._process_clips(
                 video_id, youtube_url, top_clips, clip_duration, 
@@ -221,19 +229,21 @@ class VideoProcessor:
             self._cleanup(video_id)
             
             # Complete
-            mode_label = "context-based" if generate_mode == "context" else "audio-based"
+            mode_label = "context-based" if generate_mode == "context" else \
+                        "viral" if generate_mode == "viral" else "audio-based"
             self.progress.update(video_id, "completed", 100, 
-                               f"Completed! {len(clips_output)} {mode_label} clips ready")
+                                f"Completed! {len(clips_output)} {mode_label} clips ready")
             self.progress.add_metadata(
                 video_id,
                 clips=clips_output,
                 video_info=video_info,
                 range_percent=range_percent,
                 total_clips=len(clips_output),
-                generate_mode=generate_mode  # 🆕 NEW
+                generate_mode=generate_mode
             )
-            
-            logger.info(f"Processing completed for {video_id} (mode: {generate_mode})")
+        
+            logger.info(f"Processing completed for {video_id}: {len(clips_output)}/{total_clips} clips")
+        
             
         except Exception as e:
             logger.error(f"Processing error: {str(e)}")
@@ -244,11 +254,16 @@ class VideoProcessor:
                   generate_mode: str = "audio") -> List[dict]:
         """Process each individual clip"""
         clips_output = []
+        total_clips = len(top_clips)
         
         for idx, clip_info in enumerate(top_clips):
-            progress = 50 + (idx * 8)
+            # Calculate progress: 50-90% range divided by clip count
+            progress_range = 40  # 90 - 50 = 40
+            progress_per_clip = progress_range / total_clips
+            progress = 50 + int((idx + 1) * progress_per_clip)
+            
             self.progress.update(video_id, "processing_clip", progress, 
-                            f"Processing clip {idx + 1}/{len(top_clips)}...")
+                            f"Processing clip {idx + 1}/{total_clips}...")
             
             clip_id = f"{video_id}_clip_{idx + 1}"
             
@@ -390,6 +405,12 @@ async def process_youtube(request: YouTubeRequest, background_tasks: BackgroundT
         if 'youtube.com' not in request.youtube_url and 'youtu.be' not in request.youtube_url:
             raise HTTPException(status_code=400, detail="Invalid YouTube URL")
         
+        total_clips = request.total_clips or TOP_CLIPS_COUNT
+        if total_clips < MIN_CLIPS_COUNT or total_clips > MAX_CLIPS_COUNT:
+            raise HTTPException(
+                status_code=400,
+                detail=f"total_clips must be between {MIN_CLIPS_COUNT} and {MAX_CLIPS_COUNT}"
+            )
         # Validate range format
         if request.range_percent:
             try:
@@ -424,7 +445,8 @@ async def process_youtube(request: YouTubeRequest, background_tasks: BackgroundT
             request.youtube_url,
             request.clip_duration or CLIP_DURATION,
             request.range_percent or "0-100",
-            generate_mode  # 🆕 Pass mode
+            generate_mode,  # 🆕 Pass mode
+            total_clips
         )
         
         return {
@@ -432,6 +454,7 @@ async def process_youtube(request: YouTubeRequest, background_tasks: BackgroundT
             "video_id": video_id,
             "range_percent": request.range_percent or "0-100",
             "generate_mode": generate_mode,  # 🆕 NEW
+            "total_clips": total_clips,
             "message": f"Processing started in {mode_label} mode. Use /progress/{{video_id}} to check status"
         }
         

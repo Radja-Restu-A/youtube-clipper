@@ -16,7 +16,7 @@ export const api = {
     return response.json();
   },
 
-  async processVideo(youtubeUrl, clipDuration, rangePercent, generateMode = 'audio') { // 🆕 NEW parameter
+  async processVideo(youtubeUrl, clipDuration, rangePercent, generateMode = 'audio',totalClips = 5) { // 🆕 NEW parameter
     const response = await fetch(`${API_BASE}/process`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -24,7 +24,8 @@ export const api = {
         youtube_url: youtubeUrl,
         clip_duration: clipDuration,
         range_percent: rangePercent,
-        generate_mode: generateMode  // 🆕 NEW
+        generate_mode: generateMode,
+        total_clips: totalClips  // 🆕 NEW parameter
       }),
     });
     

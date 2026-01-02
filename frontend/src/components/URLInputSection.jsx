@@ -65,6 +65,8 @@ export const URLInputSection = ({
   onRangeChange,
   generateMode,
   onGenerateModeChange,
+  totalClips,              // 🆕 NEW
+  onTotalClipsChange,      // 🆕 NEW
   rangeOptions,
   isProcessing,
   isCompleted,
@@ -185,6 +187,46 @@ export const URLInputSection = ({
             onChange={onRangeChange}
             disabled={isProcessing}
           />
+        </div>
+
+        {/* 🆕 Clip Count Selector */}
+        <div>
+          <label className="block text-sm font-semibold text-gray-300 mb-3">
+            🎬 Number of Clips
+          </label>
+          <div className="grid grid-cols-5 gap-3">
+            {[5, 10, 15, 20].map((count) => (
+              <button
+                key={count}
+                onClick={() => onTotalClipsChange(count)}
+                disabled={isProcessing}
+                className={`px-4 py-3 rounded-lg font-semibold transition-all ${
+                  totalClips === count
+                    ? 'bg-gradient-to-r from-red-500 to-pink-500 text-white shadow-lg shadow-red-500/50'
+                    : 'bg-gray-800/50 text-gray-300 hover:bg-gray-700/50 border border-gray-600'
+                } disabled:opacity-50 disabled:cursor-not-allowed`}
+              >
+                {count}
+              </button>
+            ))}
+            {/* Custom input */}
+            <input
+              type="number"
+              value={totalClips}
+              onChange={(e) => {
+                const val = parseInt(e.target.value) || 5;
+                onTotalClipsChange(Math.max(1, Math.min(20, val)));
+              }}
+              disabled={isProcessing}
+              min="1"
+              max="20"
+              className="px-4 py-3 bg-gray-800/50 border border-gray-600 rounded-lg text-gray-100 text-center font-semibold focus:outline-none focus:border-red-500 focus:ring-2 focus:ring-red-500/20 transition-all disabled:opacity-50"
+              placeholder="Custom"
+            />
+          </div>
+          <p className="text-xs text-gray-400 mt-2">
+            ⏱️ Estimated time: ~{Math.ceil(totalClips * 0.5)} minutes
+          </p>
         </div>
 
         <p className="text-xs text-gray-400">

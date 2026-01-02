@@ -66,6 +66,8 @@ export default function App() {
           onRangeChange={processor.setRangePercent}
           generateMode={processor.generateMode}
           onGenerateModeChange={processor.setGenerateMode}
+          totalClips={processor.totalClips}
+          onTotalClipsChange={processor.setTotalClips}
           rangeOptions={RANGE_OPTIONS}
           isProcessing={processor.isProcessing}
           isCompleted={processor.isCompleted}

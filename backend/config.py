@@ -23,7 +23,9 @@ TEMP_DIR = BASE_DIR / "temp"
 # Constants
 MAX_DURATION_SECONDS = 7200  # 2 hours
 CLIP_DURATION = 45  # seconds per clip
-TOP_CLIPS_COUNT = 5
+TOP_CLIPS_COUNT = 5  # Default (can be overridden by user)
+MIN_CLIPS_COUNT = 1  # 🆕 NEW
+MAX_CLIPS_COUNT = 20  # 🆕 NEW
 MODEL_NAME = "small"
 
 # Context Analysis Settings
