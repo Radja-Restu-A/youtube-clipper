@@ -68,3 +68,17 @@ class ViralClipAnalysis(BaseModel):
 
 class ViralAnalysisResult(BaseModel):
     top_clips: List[ViralClipAnalysis]
+
+class LocalVideoRequest(BaseModel):
+    video_filename: str
+    language: Optional[str] = "id"  # Language for transcription
+
+class TranscriptionResult(BaseModel):
+    video_id: str
+    filename: str
+    duration: float
+    language: str
+    transcript: Dict
+    subtitle_file: str
+    output_file: str
+    processed_at: str

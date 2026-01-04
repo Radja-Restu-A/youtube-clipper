@@ -149,20 +149,22 @@ class GeminiViralAnalyzer:
         # Clean description (first 500 chars)
         description_preview = (video_description[:500] + "...") if len(video_description) > 500 else video_description
         
-        prompt = f"""You are an expert viral content strategist analyzing a YouTube video.
+        prompt = f"""You are an expert TikTok retention engineer and short-form viral editor.
 
-VIDEO CONTEXT:
+Your task is NOT to find the "best podcast moments",
+but to extract clips that maximize RETENTION, COMPLETION RATE, and REWATCH on TikTok.
+
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+VIDEO CONTEXT:
 📺 TITLE: {video_title}
-
 📝 DESCRIPTION:
 {description_preview}
-
 🌐 URL: {youtube_url}
-⏱️  Duration: {video_duration:.1f} seconds
-🗣️  Language: {lang_context}
-🎯 Target Clip Length: {clip_duration} seconds
-🎬 Clips Requested: {total_clips}
+🗣️ Language: {lang_context}
+
+TARGET PLATFORM: TikTok / Reels / Shorts
+TARGET CLIP LENGTH: {clip_duration} seconds (HARD LIMIT)
+CLIPS REQUIRED: EXACTLY {total_clips}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 FULL TRANSCRIPT:
@@ -170,150 +172,115 @@ FULL TRANSCRIPT:
 {transcript_text}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-🎯 YOUR MISSION:
+🎯 CORE OBJECTIVE (CRITICAL):
+Select clips that PEOPLE WILL NOT SCROLL AWAY FROM in the FIRST 2 SECONDS.
 
-⚠️ CRITICAL REQUIREMENT: You MUST return EXACTLY {total_clips} clips in the JSON response!
+DO NOT prioritize:
+❌ Natural conversation
+❌ Complete explanations
+❌ Contextual build-up
 
-Analyze this video holistically and find the TOP {total_clips} viral-worthy clips that:
-
-1. ✅ **MATCH THE VIDEO THEME** - Clips must be DIRECTLY RELEVANT to what the title/description promise
-2. ✅ **HAVE POWERFUL HOOKS** - First 3 seconds grab attention immediately
-3. ✅ **DELIVER VALUE** - The 30-60s clip delivers insights/entertainment related to the theme
-4. ✅ **ARE VIRAL-WORTHY** - High engagement, shareable, comment-worthy
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-STEP-BY-STEP ANALYSIS PROCESS:
-
-STEP 1: Understand Video Theme
-- What is this video primarily about based on title + description?
-- What topics/themes are promised to viewers?
-- What would viewers expect to learn/see?
-
-STEP 2: Find Theme-Matching Moments
-- Scan transcript for segments that DIRECTLY address the main theme
-- Look for moments where the speaker delivers on the title's promise
-- Prioritize segments that answer "what viewers came for"
-
-STEP 3: Identify Hooks Within Theme-Relevant Segments
-- Within theme-relevant parts, find powerful 3-second hooks
-- Hook must create curiosity about the theme topic
-- Hook should make viewers want to hear more about the theme
-
-STEP 4: Extend to Full Clips
-- Extend each hook to 30-60 seconds of natural conversation
-- Ensure the full clip delivers valuable content about the theme
-- Content should feel complete and satisfying
+PRIORITIZE:
+✅ Scroll-stopping openings
+✅ Mid-sentence starts
+✅ Strong opinions / contradictions
+✅ Emotional, risky, or uncomfortable statements
+✅ Moments that feel "out of context" but force curiosity
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CLIP SELECTION RULES (NON-NEGOTIABLE):
 
-CLIP SELECTION CRITERIA (WEIGHTED SCORING):
+1️⃣ HOOK FIRST (MOST IMPORTANT)
+- Clip MUST start with the most provocative sentence fragment
+- Starting mid-sentence is ENCOURAGED
+- First 1–2 seconds must feel INTERRUPTIVE
 
-Calculate viral_score using this formula:
+2️⃣ FAST PAYOFF
+- The main point MUST be delivered within first 5–8 seconds
+- If payoff happens later → DISCARD the clip
+
+3️⃣ SHORT & DENSE
+- Ideal duration: 7–15 seconds
+- NEVER exceed {clip_duration} seconds
+- If the clip feels slow → DISCARD
+
+4️⃣ PODCAST-SPECIFIC EDITING LOGIC
+- Remove pauses, filler words, breathing gaps
+- Assume aggressive jump cuts
+- Assume subtitles will carry the message
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+RETENTION-BASED SCORING (NOT THEME-BASED):
 
 viral_score = (
-  (theme_relevance_score × 0.30) +      // 30% - Does it deliver on title promise?
-  (hook_quality_score × 0.35) +         // 35% - How strong is the 3-second hook?
-  (content_value_score × 0.20) +        // 20% - Value of full 30-60s content
-  (virality_potential_score × 0.15)     // 15% - Shareability/engagement potential
+  (hook_interrupt_score × 0.40) +        // Scroll-stopping power
+  (early_payoff_score × 0.30) +          // Value in first 5–8s
+  (completion_probability × 0.20) +      // Likelihood to finish
+  (comment_trigger_score × 0.10)         // Will people argue/comment?
 )
 
-Each component scored 0-100, then apply weights.
+Each scored 0–100.
 
-1. **THEME RELEVANCE SCORE** (30% weight) 🎯
-   100: Perfectly addresses exact topic in title
-   85:  Strongly related to main theme
-   70:  Clearly connected to theme
-   55:  Somewhat related to theme
-   40:  Tangentially related
-   
-2. **HOOK QUALITY SCORE** (35% weight) 🎣
-   100: Instant scroll-stopper, creates massive curiosity
-   85:  Very strong hook, makes you want to keep watching
-   70:  Good hook, sparks interest
-   55:  Decent hook, somewhat engaging
-   40:  Weak hook
-   
-3. **CONTENT VALUE SCORE** (20% weight) 💎
-   100: Delivers exceptional insights/entertainment
-   85:  Strong value, actionable/memorable
-   70:  Good content, worth watching
-   55:  Acceptable content
-   40:  Basic content
-   
-4. **VIRALITY POTENTIAL SCORE** (15% weight) 🔥
-   100: Will definitely spark massive engagement
-   85:  High chance of comments/shares
-   70:  Likely to get decent engagement
-   55:  Some viral elements
-   40:  Low viral potential
+1️⃣ HOOK INTERRUPT SCORE (40%)
+100 = Forces viewer to stop scrolling instantly
+85  = Strong pattern break
+70  = Noticeable but familiar
+<70 = Reject
+
+2️⃣ EARLY PAYOFF SCORE (30%)
+100 = Main insight delivered immediately
+85  = Delivered within 5s
+70  = Delivered within 8s
+<70 = Reject
+
+3️⃣ COMPLETION PROBABILITY (20%)
+100 = Very likely to watch until end
+85  = Good chance
+70  = Moderate
+<70 = Reject
+
+4️⃣ COMMENT TRIGGER (10%)
+100 = Strongly opinionated / polarizing
+85  = Debatable
+70  = Mild reaction
+<70 = Weak
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-WHAT TO AVOID:
-❌ Off-topic tangents (even if entertaining)
-❌ Generic intros not related to theme
-❌ Filler conversations that don't address main topic
-❌ CTAs and outros
-❌ Segments that don't deliver on title's promise
-
-DIVERSITY WITHIN THEME:
-- All {total_clips} clips should relate to the SAME main theme
-- But cover DIFFERENT aspects/angles of that theme
+WHAT TO AVOID (AUTO-REJECT):
+❌ Intro context
+❌ Explanations that require prior knowledge
+❌ Safe or neutral statements
+❌ Long stories without punch
+❌ Anything that only works in long-form
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-TECHNICAL REQUIREMENTS:
-✅ Each clip: 30-60 seconds (hook 3s + content 27-57s)
-✅ Use EXACT timestamps from transcript
-✅ NO overlapping clips
-✅ EXACTLY {total_clips} DIFFERENT segments covering different aspects of theme
-
-SCORING (0-100) - BE GENEROUS BUT FAIR:
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-⭐ 85-100: EXCEPTIONAL
-⭐ 75-84: VERY GOOD (Most viral clips fall here!)
-⭐ 65-74: GOOD (Still usable!)
-⭐ 55-64: ACCEPTABLE
-
-✅ DO score 75-85 for SOLID, USABLE clips (this is normal!)
-✅ DO be optimistic - if it's theme-relevant with decent hook, go 70+
-✅ REMEMBER: A 75-score clip can still go viral on TikTok!
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
 OUTPUT FORMAT (STRICT JSON ONLY):
 
 {{
-  "video_theme_analysis": "<1-2 sentence summary>",
+  "retention_strategy_summary": "<1–2 sentences explaining why these clips work on TikTok>",
   "top_clips": [
-    // ⚠️ MUST CONTAIN EXACTLY {total_clips} OBJECTS!
     {{
       "rank": 1,
       "start_time": <timestamp>,
       "end_time": <timestamp>,
       "duration": <seconds>,
-      "hook_text": "<exact first 3 seconds text>",
-      "content_summary": "<what the full 30-60s covers>",
-      "theme_relevance": "<how this addresses main topic>",
-      "reason": "<why viral AND theme-relevant>",
-      "viral_score": <70-100>,
-      "category": "hook|emotional|value|controversial|storytelling",
-      "suggested_caption": "<catchy caption>",
-      "loop_hint": "<how to loop or N/A>"
-    }},
-    // ... continue until rank {total_clips}
+      "hook_text": "<EXACT opening words used>",
+      "early_payoff": "<what viewer gets in first 5–8 seconds>",
+      "why_people_stay": "<retention logic>",
+      "viral_score": <70–100>,
+      "category": "opinion|controversial|emotional|counterintuitive|confession",
+      "suggested_caption": "<short, punchy caption>",
+      "subtitle_emphasis": "<3–5 key words to highlight>",
+      "loop_hint": "<how last frame can loop into first>"
+    }}
   ]
 }}
 
-⚠️ FINAL REMINDERS:
-1. Your response MUST include EXACTLY {total_clips} clips in top_clips array
-2. If you cannot find {total_clips} perfect clips, provide {total_clips} best available
-3. Lower-quality clips (score 65-75) are acceptable to meet the {total_clips} requirement
-4. Count your clips before submitting - MUST BE EXACTLY {total_clips}!
-
-Return ONLY the JSON (no markdown, no extra text):"""
+FINAL RULES:
+1. MUST return EXACTLY {total_clips} clips
+2. If unsure between two clips, choose the SHORTER and MORE AGGRESSIVE one
+3. Think like a SCROLLER, not a viewer
+4. Output JSON ONLY — no explanations"""
         
         return prompt
     

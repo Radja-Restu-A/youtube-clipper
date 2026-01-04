@@ -2,8 +2,10 @@ from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi import UploadFile, File, Path
 import json
 import uuid
+import shutil
 from typing import List
 from datetime import datetime
 
@@ -11,10 +13,10 @@ from datetime import datetime
 from config import (
     init_directories, DEVICE, MODEL_NAME, MAX_DURATION_SECONDS,
     CLIP_DURATION, TOP_CLIPS_COUNT, AUDIO_DIR, CLIPS_DIR, 
-    SUBTITLES_DIR, OUTPUT_DIR, HISTORY_DIR, logger,
+    SUBTITLES_DIR, OUTPUT_DIR, HISTORY_DIR, UPLOAD_DIR, logger,
     CONTEXT_CLIP_MIN_DURATION, CONTEXT_CLIP_MAX_DURATION, CONTEXT_DURATION_FLEX,
     GEMINI_API_KEY, GEMINI_MODEL, GEMINI_TIMEOUT, GEMINI_MAX_RETRIES,
-    MIN_CLIPS_COUNT, MAX_CLIPS_COUNT
+    MIN_CLIPS_COUNT, MAX_CLIPS_COUNT, MAX_VIDEO_SIZE_MB, ALLOWED_VIDEO_FORMATS
 )
 
 # Import models
@@ -34,6 +36,7 @@ from services.subtitle_service import SubtitleService
 from services.video_service import VideoProcessingService
 from services.gemini_viral_analyzer import GeminiViralAnalyzer
 from services.history_service import OutputHistoryService
+from services.local_video_service import LocalVideoService
 
 # Import utils
 from utils.time_utils import parse_range_percent
@@ -68,6 +71,7 @@ context_service = ContextAnalysisService()  # 🆕 NEW
 subtitle_service = SubtitleService()
 video_service = VideoProcessingService()
 output_history_service = OutputHistoryService(OUTPUT_DIR)
+local_video_service = LocalVideoService()
 
 # Initialize services gemini
 gemini_analyzer = None
@@ -361,9 +365,129 @@ class VideoProcessor:
         ]
         cleanup_temp_files(video_id, patterns)
 
+class LocalVideoProcessor:
+    """Processor for locally uploaded videos"""
+    
+    def __init__(self):
+        self.local_video = local_video_service
+        self.transcription = transcription_service
+        self.subtitle = subtitle_service
+        self.video = video_service
+        self.progress = progress_repo
+    
+    def process(self, video_id: str, video_path: Path, language: str = "id"):
+        """Process local video file"""
+        try:
+            from config import logger
+            
+            # Step 1: Validate video
+            self.progress.update(video_id, "validating", 5, "Validating video file...")
+            
+            if not self.local_video.validate_video_file(video_path):
+                raise Exception("Invalid video file")
+            
+            duration = self.local_video.get_video_duration(video_path)
+            
+            if duration == 0:
+                raise Exception("Could not determine video duration")
+            
+            logger.info(f"Processing local video: {video_path.name} ({duration:.2f}s)")
+            
+            # Step 2: Extract audio
+            self.progress.update(video_id, "extracting_audio", 15, "Extracting audio from video...")
+            
+            audio_path = AUDIO_DIR / f"{video_id}.mp3"
+            
+            if not self.local_video.extract_audio_from_video(video_path, audio_path):
+                raise Exception("Failed to extract audio")
+            
+            # Step 3: Transcribe
+            self.progress.update(video_id, "transcribing", 30, 
+                               "Transcribing audio with Whisper AI...")
+            
+            result = self.transcription.transcribe(audio_path, language=language)
+            
+            if not result or 'segments' not in result:
+                raise Exception("Transcription failed")
+            
+            logger.info(f"Transcription complete: {len(result['segments'])} segments")
+            
+            # Step 4: Create subtitle
+            self.progress.update(video_id, "creating_subtitle", 60, 
+                               "Creating subtitle file...")
+            
+            # Extract all words
+            all_words = []
+            for segment in result['segments']:
+                if 'words' in segment:
+                    all_words.extend(segment['words'])
+            
+            if not all_words:
+                # Fallback: use segments if no word-level timestamps
+                logger.warning("No word-level timestamps, using segments")
+                for segment in result['segments']:
+                    all_words.append({
+                        'start': segment['start'],
+                        'end': segment['end'],
+                        'word': segment['text']
+                    })
+            
+            # Create ASS subtitle
+            ass_path = SUBTITLES_DIR / f"{video_id}.ass"
+            self.subtitle.create_ass_subtitle(all_words, ass_path)
+            
+            # Step 5: Burn subtitle
+            self.progress.update(video_id, "burning_subtitle", 75, 
+                               "Burning subtitle into video...")
+            
+            output_path = OUTPUT_DIR / f"{video_id}_subtitled{video_path.suffix}"
+            
+            if not self.video.burn_subtitle(video_path, ass_path, output_path):
+                raise Exception("Failed to burn subtitle")
+            
+            # Step 6: Save metadata
+            self.progress.update(video_id, "finalizing", 95, "Finalizing...")
+            
+            metadata = {
+                "video_id": video_id,
+                "filename": video_path.name,
+                "duration": duration,
+                "language": language,
+                "transcript": result,
+                "subtitle_file": str(ass_path),
+                "output_file": str(output_path),
+                "processed_at": datetime.now().isoformat()
+            }
+            
+            metadata_path = OUTPUT_DIR / f"{video_id}_local_metadata.json"
+            with open(metadata_path, 'w', encoding='utf-8') as f:
+                json.dump(metadata, f, ensure_ascii=False, indent=2)
+            
+            # Cleanup
+            if audio_path.exists():
+                audio_path.unlink()
+            
+            # Complete
+            self.progress.update(video_id, "completed", 100, 
+                               "Completed! Video with subtitle ready")
+            
+            self.progress.add_metadata(
+                video_id,
+                filename=video_path.name,
+                duration=duration,
+                output_file=str(output_path),
+                subtitle_file=str(ass_path)
+            )
+            
+            logger.info(f"Local video processing completed: {video_id}")
+            
+        except Exception as e:
+            logger.error(f"Processing error: {str(e)}")
+            self.progress.update(video_id, "error", 0, str(e))
 
 # Initialize processor
 video_processor = VideoProcessor()
+local_video_processor = LocalVideoProcessor()
 
 
 # ==============================================
@@ -592,6 +716,165 @@ async def get_storage_stats():
         return stats
     except Exception as e:
         logger.error(f"Error getting stats: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+    
+@app.post("/upload-video")
+async def upload_video(
+    file: UploadFile = File(...),
+    language: str = "id"
+):
+    """
+    Upload video file for transcription and subtitle burning
+    
+    Supports: MP4, MKV, AVI, MOV, WebM, FLV, WMV
+    Max size: 2GB
+    """
+    try:
+        # Validate file
+        if not file.filename:
+            raise HTTPException(status_code=400, detail="No filename provided")
+        
+        # Check extension
+        file_ext = Path(file.filename).suffix.lower()
+        valid_extensions = {'.mp4', '.mkv', '.avi', '.mov', '.webm', '.flv', '.wmv'}
+        
+        if file_ext not in valid_extensions:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid file format. Supported: {', '.join(valid_extensions)}"
+            )
+        
+        # Generate video ID
+        video_id = str(uuid.uuid4())
+        
+        # Save uploaded file
+        upload_path = UPLOAD_DIR / f"{video_id}{file_ext}"
+        
+        logger.info(f"Uploading file: {file.filename} → {upload_path}")
+        
+        with open(upload_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        
+        # Check file size after upload
+        file_size = upload_path.stat().st_size
+        max_size = 2 * 1024 * 1024 * 1024  # 2GB
+        
+        if file_size > max_size:
+            upload_path.unlink()  # Delete file
+            raise HTTPException(
+                status_code=400,
+                detail=f"File too large: {file_size / 1024 / 1024:.2f}MB (max: 2GB)"
+            )
+        
+        logger.info(f"✅ File uploaded: {file_size / 1024 / 1024:.2f}MB")
+        
+        return {
+            "status": "uploaded",
+            "video_id": video_id,
+            "filename": file.filename,
+            "size_mb": round(file_size / 1024 / 1024, 2),
+            "message": "File uploaded successfully. Use /process-local-video to start processing"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Upload error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/process-local-video")
+async def process_local_video(
+    video_id: str,
+    language: str = "id",
+    background_tasks: BackgroundTasks = None
+):
+    """
+    Process uploaded video: transcribe and burn subtitle
+    
+    Args:
+        video_id: ID from /upload-video response
+        language: Language code (id, en, etc.)
+    """
+    try:
+        # Find uploaded file
+        upload_files = list(UPLOAD_DIR.glob(f"{video_id}.*"))
+        
+        if not upload_files:
+            raise HTTPException(status_code=404, detail="Video file not found")
+        
+        video_path = upload_files[0]
+        
+        # Initialize progress
+        progress_repo.update(video_id, "queued", 0, "Video queued for processing")
+        
+        # Start processing in background
+        background_tasks.add_task(
+            local_video_processor.process,
+            video_id,
+            video_path,
+            language
+        )
+        
+        return {
+            "status": "processing",
+            "video_id": video_id,
+            "filename": video_path.name,
+            "language": language,
+            "message": "Processing started. Use /progress/{video_id} to check status"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error starting local video processing: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/download-subtitled/{video_id}")
+async def download_subtitled_video(video_id: str):
+    """Download processed video with burned subtitles"""
+    try:
+        # Find output file
+        output_files = list(OUTPUT_DIR.glob(f"{video_id}_subtitled.*"))
+        
+        if not output_files:
+            raise HTTPException(status_code=404, detail="Subtitled video not found")
+        
+        output_file = output_files[0]
+        
+        return FileResponse(
+            path=str(output_file),
+            filename=f"subtitled_{output_file.name}",
+            media_type="video/mp4"
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error downloading subtitled video: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/download-subtitle/{video_id}")
+async def download_subtitle_file(video_id: str):
+    """Download subtitle file (.ass)"""
+    try:
+        subtitle_file = SUBTITLES_DIR / f"{video_id}.ass"
+        
+        if not subtitle_file.exists():
+            raise HTTPException(status_code=404, detail="Subtitle file not found")
+        
+        return FileResponse(
+            path=str(subtitle_file),
+            filename=f"subtitle_{video_id}.ass",
+            media_type="text/plain"
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error downloading subtitle: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

@@ -12,6 +12,7 @@ import { URLInputSection } from './components/URLInputSection.jsx';
 import { ClipsGrid } from './components/ClipsGrid.jsx';
 import { VideoPreview } from './components/VideoPreview.jsx';
 import { InfoSection } from './components/InfoSection.jsx';
+import { VideoUploadSection } from './components/VideoUploadSection.jsx';
 
 export default function App() {
   const [showHistory, setShowHistory] = useState(false);
@@ -94,6 +95,13 @@ export default function App() {
         />
 
         <InfoSection />
+
+        <VideoUploadSection 
+          onVideoProcessed={(videoId) => {
+            console.log('Video processed:', videoId);
+            loadHistory();
+          }}
+        />
       </div>
     </div>
   );

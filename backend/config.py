@@ -19,6 +19,7 @@ SUBTITLES_DIR = BASE_DIR / "subtitles"
 OUTPUT_DIR = BASE_DIR / "output"
 HISTORY_DIR = BASE_DIR / "history"
 TEMP_DIR = BASE_DIR / "temp"
+UPLOAD_DIR = BASE_DIR / "uploads"
 
 # Constants
 MAX_DURATION_SECONDS = 7200  # 2 hours
@@ -27,6 +28,8 @@ TOP_CLIPS_COUNT = 5  # Default (can be overridden by user)
 MIN_CLIPS_COUNT = 1  # 🆕 NEW
 MAX_CLIPS_COUNT = 20  # 🆕 NEW
 MODEL_NAME = "small"
+MAX_VIDEO_SIZE_MB = 2048  # 2GB
+ALLOWED_VIDEO_FORMATS = {'.mp4', '.mkv', '.avi', '.mov', '.webm', '.flv', '.wmv'}
 
 # Context Analysis Settings
 CONTEXT_CLIP_MIN_DURATION = 30
@@ -45,5 +48,5 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 def init_directories():
     """Initialize all required directories"""
-    for dir_path in [AUDIO_DIR, CLIPS_DIR, SUBTITLES_DIR, OUTPUT_DIR, HISTORY_DIR, TEMP_DIR]:
+    for dir_path in [AUDIO_DIR, CLIPS_DIR, SUBTITLES_DIR, OUTPUT_DIR, HISTORY_DIR, TEMP_DIR, UPLOAD_DIR]:
         dir_path.mkdir(exist_ok=True)
